@@ -1,4 +1,4 @@
-import { createContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useEffect, useMemo, useState } from "react";
 import type { AppData, AreaId, AreaNode, ComparisonRun, ScanId } from "./types";
 import {
   chat,
@@ -12,7 +12,6 @@ import {
   deleteZone,
   fetchDashboard,
   fetchRecommendations,
-  fetchProjects,
   fetchReports,
   fetchRuns,
   fetchScans,
@@ -24,6 +23,8 @@ import {
   uploadScan,
   type ProjectSummary,
 } from "./api";
+import { useProject } from "../project/useProject";
+import { useRealtime } from "../realtime/useRealtime";
 
 type AppDataContextValue = {
   data: AppData;
@@ -37,8 +38,8 @@ type AppDataContextValue = {
   setSelectedT1: (scanId?: ScanId) => void;
   setSelectedT2: (scanId?: ScanId) => void;
 
-      // Zones
-      addArea: (name: string, type: AreaNode["type"], parentId?: AreaId) => Promise<string>;
+  // Zones
+  addArea: (name: string, type: AreaNode["type"], parentId?: AreaId) => Promise<string>;
   renameArea: (id: AreaId, name: string) => Promise<void>;
   removeArea: (id: AreaId) => Promise<void>;
   setAreaCompletion: (id: AreaId, completionPct: number) => Promise<void>;
@@ -75,17 +76,21 @@ type AppDataContextValue = {
 };
 
 export const AppDataContext = createContext<AppDataContextValue | null>(null);
-/**
- * Central data provider for the application.
- * Manages state for Projects, Zones, Scans, Runs, Dashboard, and Reports.
- * Handles real-time updates via WebSockets and exposes methods to modify data.
- */
+
 export function AppDataProvider({ children }: { children: React.ReactNode }) {
+  // Project state now lives in ProjectContext — read it from there
+  const {
+    projects,
+    activeProjectId,
+    isLoading: projectsLoading,
+    setProjectId,
+    createProject: createProjectFromCtx,
+    refreshProjects,
+  } = useProject();
+
   const [data, setData] = useState<AppData>({ scans: [], areas: [], runs: [] });
-  const [isLoading, setIsLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | undefined>(undefined);
 
   const [dashboard, setDashboard] = useState<AppDataContextValue["dashboard"]>({
     overallProgressPct: 0,
@@ -96,12 +101,10 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   });
   const [reports, setReports] = useState<AppDataContextValue["reports"]>([]);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const LS_PROJECT = "constrack_project";
-  /**
- * Fetches all data for the active project from the backend.
- * Runs in parallel: Zones, Scans, Runs, Dashboard, Reports.
- */
+  const { subscribe } = useRealtime();
+  const lsT1 = (pid: string) => `constrack_t1_${pid}`;
+  const lsT2 = (pid: string) => `constrack_t2_${pid}`;
+
   async function loadAll(projectId: string) {
     const [zones, scans, runs, dash, reps] = await Promise.all([
       fetchZones(projectId),
@@ -111,9 +114,17 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       fetchReports(projectId),
     ]);
 
+    const scanIdSet = new Set(scans.map((s) => s.id));
+    const rawT1 = localStorage.getItem(lsT1(projectId));
+    const rawT2 = localStorage.getItem(lsT2(projectId));
+    const restoredT1 = rawT1 && scanIdSet.has(rawT1) ? rawT1 : undefined;
+    const restoredT2 = rawT2 && scanIdSet.has(rawT2) ? rawT2 : undefined;
+
     setData((prev) => ({
       ...prev,
       projectId,
+      selectedT1: restoredT1,
+      selectedT2: restoredT2,
       areas: zones.map((z) => ({
         id: z.id,
         name: z.name,
@@ -165,68 +176,31 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       }))
     );
   }
- // Initial load: Fetch project list and select active project (from localStorage or default)
-  useEffect(() => {
-    (async () => {
-      try {
-        setError(undefined);
-        const projectList = await fetchProjects();
-        setProjects(projectList);
-        const stored = localStorage.getItem(LS_PROJECT);
-        const fallback = stored && projectList.find((p) => p.id === stored) ? stored : projectList[0]?.id;
-        setActiveProjectId(fallback);
-      } catch (e: any) {
-        setError(String(e?.message || e));
-      }
-    })();
-  }, []);
-  // Effect: When activeProjectId changes, load data and setup WebSocket connection
+
+  // Load project data whenever the active project changes
   useEffect(() => {
     if (!activeProjectId) return;
-    localStorage.setItem(LS_PROJECT, activeProjectId);
-
     let cancelled = false;
-    const setupWs = () => {
-      try {
-        wsRef.current?.close();
-      } catch {
-        // ignore
-      }
-      const ws = new WebSocket(`ws://localhost:4000/ws?projectId=${encodeURIComponent(activeProjectId)}`);
-      ws.onmessage = async (ev) => {
-        try {
-          const msg = JSON.parse(String(ev.data));
-          if (msg?.type === "run.done" || msg?.type === "run.created") {
-            await loadAll(activeProjectId);
-          }
-        } catch {
-          // ignore
-        }
-      };
-      wsRef.current = ws;
-    };
-
     (async () => {
       try {
-        setIsLoading(true);
+        setDataLoading(true);
         await loadAll(activeProjectId);
-        setupWs();
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message || e));
       } finally {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) setDataLoading(false);
       }
     })();
-
-    return () => {
-      cancelled = true;
-      try {
-        wsRef.current?.close();
-      } catch {
-        // ignore
-      }
-    };
+    return () => { cancelled = true; };
   }, [activeProjectId]);
+
+  // Refresh data when the backend signals a run has changed
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const unsub1 = subscribe("run.done", () => loadAll(activeProjectId));
+    const unsub2 = subscribe("run.created", () => loadAll(activeProjectId));
+    return () => { unsub1(); unsub2(); };
+  }, [activeProjectId, subscribe]);
 
   const api = useMemo<AppDataContextValue>(() => {
     const getProjectId = () => {
@@ -237,44 +211,38 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
 
     return {
       data,
-      isLoading,
+      // Expose combined loading: true while either project list or project data is loading
+      isLoading: projectsLoading || dataLoading,
       error,
       projects,
       dashboard,
       reports,
-      setProjectId: (projectId) => setActiveProjectId(projectId),
-      createProject: async (name) => {
-        const trimmed = String(name || "").trim();
+
+      // Project mutations — delegate to ProjectContext; AppDataProvider keeps these in its
+      // public surface so existing useAppData() call-sites don't need updating.
+      setProjectId,
+      createProject: createProjectFromCtx,
+
+      createProjectFull: async (payload) => {
+        const trimmed = String(payload.name || "").trim();
         if (trimmed.length < 2) throw new Error("Project name is required");
-        const created = await apiCreateProject({ name: trimmed });
-        const projectList = await fetchProjects();
-        setProjects(projectList);
-        setActiveProjectId(created.id);
+        const created = await apiCreateProject({ ...payload, name: trimmed });
+        await refreshProjects();
+        setProjectId(created.id);
         return created.id;
       },
 
-      createProjectFull: async (data) => {
-        const trimmed = String(data.name || "").trim();
-        if (trimmed.length < 2) throw new Error("Project name is required");
-        const created = await apiCreateProject({ ...data, name: trimmed });
-        const projectList = await fetchProjects();
-        setProjects(projectList);
-        setActiveProjectId(created.id);
-        return created.id;
-      },
-
-      updateProject: async (id, data) => {
-        await apiUpdateProject(id, data);
-        const projectList = await fetchProjects();
-        setProjects(projectList);
+      updateProject: async (id, payload) => {
+        await apiUpdateProject(id, payload);
+        await refreshProjects();
       },
 
       deleteProject: async (id) => {
         await apiDeleteProject(id);
-        const projectList = await fetchProjects();
-        setProjects(projectList);
+        const newList = await refreshProjects();
         if (activeProjectId === id) {
-          setActiveProjectId(projectList[0]?.id);
+          const next = newList[0]?.id;
+          if (next) setProjectId(next);
         }
       },
 
@@ -287,20 +255,37 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       removeScan: async (scanId) => {
         const projectId = getProjectId();
         await deleteScan(scanId);
+        if (localStorage.getItem(lsT1(projectId)) === scanId) localStorage.removeItem(lsT1(projectId));
+        if (localStorage.getItem(lsT2(projectId)) === scanId) localStorage.removeItem(lsT2(projectId));
         setData((prev) => ({
           ...prev,
           selectedT1: prev.selectedT1 === scanId ? undefined : prev.selectedT1,
           selectedT2: prev.selectedT2 === scanId ? undefined : prev.selectedT2,
-          areas: prev.areas.map(area => ({
+          areas: prev.areas.map((area) => ({
             ...area,
-            linkedScanIds: area.linkedScanIds?.filter(id => id !== scanId) || []
-          }))
+            linkedScanIds: area.linkedScanIds?.filter((id) => id !== scanId) || [],
+          })),
         }));
         await loadAll(projectId);
       },
 
-      setSelectedT1: (scanId) => setData((p) => ({ ...p, selectedT1: scanId })),
-      setSelectedT2: (scanId) => setData((p) => ({ ...p, selectedT2: scanId })),
+      setSelectedT1: (scanId) => {
+        const pid = activeProjectId || data.projectId;
+        if (pid) {
+          if (scanId) localStorage.setItem(lsT1(pid), scanId);
+          else localStorage.removeItem(lsT1(pid));
+        }
+        setData((p) => ({ ...p, selectedT1: scanId }));
+      },
+
+      setSelectedT2: (scanId) => {
+        const pid = activeProjectId || data.projectId;
+        if (pid) {
+          if (scanId) localStorage.setItem(lsT2(pid), scanId);
+          else localStorage.removeItem(lsT2(pid));
+        }
+        setData((p) => ({ ...p, selectedT2: scanId }));
+      },
 
       addArea: async (name, type, parentId) => {
         const projectId = getProjectId();
@@ -339,7 +324,6 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         const t2 = data.selectedT2;
         if (!t1 || !t2 || t1 === t2) throw new Error("Select two different scans");
         await createRun(projectId, t1, t2, 0.05);
-        // results will arrive via websocket; refresh now anyway
         await loadAll(projectId);
       },
 
@@ -389,7 +373,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         return fetchWorkDiary(projectId);
       },
     };
-  }, [data, isLoading, error, dashboard, reports, activeProjectId, projects]);
+  }, [data, dataLoading, projectsLoading, error, dashboard, reports, activeProjectId, projects, setProjectId, createProjectFromCtx, refreshProjects]);
 
   return <AppDataContext.Provider value={api}>{children}</AppDataContext.Provider>;
 }

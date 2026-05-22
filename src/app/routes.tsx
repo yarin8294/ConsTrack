@@ -3,6 +3,8 @@ import { AppLayout } from "../layouts/AppLayout";
 import { AuthLayout } from "../layouts/AuthLayout";
 import { RequireAuth } from "./auth/RequireAuth";
 import { AppDataProvider } from "./data/AppDataProvider";
+import { ProjectProvider } from "./project/ProjectContext";
+import { RealtimeProvider } from "./realtime/RealtimeProvider";
 
 import { LoginPage } from "../pages/auth/LoginPage";
 import { RegisterPage } from "../pages/auth/RegisterPage";
@@ -30,9 +32,13 @@ export const router = createBrowserRouter([
   },
   {
     element: (
-      <AppDataProvider>
-        <RequireAuth />
-      </AppDataProvider>
+      <ProjectProvider>
+        <RealtimeProvider>
+          <AppDataProvider>
+            <RequireAuth />
+          </AppDataProvider>
+        </RealtimeProvider>
+      </ProjectProvider>
     ),
     children: [
       {
