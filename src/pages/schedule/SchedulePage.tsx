@@ -3,6 +3,7 @@ import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Select } from "../../components/ui/Select";
 import { Button } from "../../components/ui/Button";
+import { ProgressBar } from "../../components/ui/ProgressBar";
 import { useAppData } from "../../app/data/useAppData";
 import type { ScheduleTask, WorkDiaryEntry } from "../../app/data/types";
 import { formatDate } from "../../app/format";
@@ -88,10 +89,7 @@ export function SchedulePage() {
                       {formatDate(t.start)} → {formatDate(t.finish)} · Owner: {t.owner}
                     </div>
                   </div>
-                  <div className="text-sm">
-                    <span className="muted mr-1">Prog</span>
-                    <span className="font-semibold">{t.progressPct}%</span>
-                  </div>
+                  <ProgressBar value={t.progressPct} className="w-28" />
                 </div>
               ))}
             </div>

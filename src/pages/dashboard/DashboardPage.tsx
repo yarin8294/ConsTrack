@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
+import { ProgressBar } from "../../components/ui/ProgressBar";
 import { useNavigate } from "react-router-dom";
 import { useAppData } from "../../app/data/useAppData";
 import { formatDate } from "../../app/format";
@@ -120,9 +121,7 @@ export function DashboardPage() {
                     return (
                       <div key={m.areaId} className="flex items-center gap-3">
                         <div className="w-40 truncate text-sm">{areaName}</div>
-                        <div className="flex-1 h-2 rounded surface-2 overflow-hidden">
-                          <div className="h-2 accent" style={{ width: `${m.progressPct}%` }} />
-                        </div>
+                        <ProgressBar value={m.progressPct} color="accent" showValue={false} className="flex-1" />
                         <div className="w-12 text-right text-sm muted">{m.progressPct}%</div>
                       </div>
                     );

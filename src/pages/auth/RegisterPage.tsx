@@ -48,7 +48,7 @@ export function RegisterPage() {
       {error && <div className="text-red-500 text-sm">{error}</div>}
       <Input
         label="Full name"
-        placeholder="Michael Billan"
+        placeholder="Full name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         error={nameError}
@@ -66,7 +66,7 @@ export function RegisterPage() {
 
       <Input
         label="Username"
-        placeholder="michaelb"
+        placeholder="Username"
         value={username}
         onChange={(e) => setUsername(e.target.value)}
         error={usernameError}

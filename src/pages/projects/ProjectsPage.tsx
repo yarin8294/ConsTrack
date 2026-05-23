@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppData } from "../../app/data/useAppData";
 import { createZone, type ProjectSummary } from "../../app/data/api";
+import { ProgressBar } from "../../components/ui/ProgressBar";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -224,7 +225,6 @@ function ProjectCard({
         ? "text-yellow-500"
         : "text-green-500";
 
-  const barColor = pct >= 80 ? "bg-green-500" : pct >= 40 ? "bg-blue-500" : "bg-yellow-400";
 
   return (
     <div className="rounded-2xl border border-app bg-app flex flex-col gap-4 p-5 hover:shadow-md transition-shadow">
@@ -254,16 +254,7 @@ function ProjectCard({
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div>
-        <div className="flex justify-between text-xs mb-1">
-          <span className="muted">Overall progress</span>
-          <span className="font-medium">{pct}%</span>
-        </div>
-        <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-          <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
-        </div>
-      </div>
+      <ProgressBar value={pct} label="Overall progress" />
 
       {/* Stats row */}
       <div className="flex items-center justify-between text-xs">
