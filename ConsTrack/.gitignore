@@ -25,6 +25,7 @@ dist-ssr
 
 # Python
 **/.venv/
+**/venv/
 **/__pycache__/
 *.pyc
 
@@ -40,5 +41,10 @@ dist-ssr
 .env.local
 .env.*.local
 
-# Large data files
+# Large data / binary scan files (also prevents Tailwind from scanning them)
 *.las
+*.ply
+*.e57
+*.laz
+*.pcd
+*.xlsx

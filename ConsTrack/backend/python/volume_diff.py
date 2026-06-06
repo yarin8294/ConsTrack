@@ -8,7 +8,7 @@ from typing import Tuple
 
 
 def _load_point_cloud(path: str):
-        """
+    """
     Loads a point cloud file from the given path.
     Supports .ply, .las, .laz, and .e57 formats.
     
@@ -61,7 +61,7 @@ def _load_point_cloud(path: str):
         e57 = pye57.E57(path)
         if e57.scan_count == 0:
             raise RuntimeError("E57 file contains no scans")
-        data = e57.read_scan(0, intensity=False, colors=False)
+        data = e57.read_scan(0, intensity=False, colors=False, ignore_missing_fields=True)
         pts = np.vstack(
             (data["cartesianX"], data["cartesianY"], data["cartesianZ"])
         ).T.astype("float64")

@@ -3,3 +3,8 @@ numpy
 laspy
 pye57
 lazrs
+reportlab
+openpyxl
+matplotlib
+scikit-learn
+scipy
