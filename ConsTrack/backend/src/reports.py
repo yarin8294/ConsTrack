@@ -1,5 +1,8 @@
+import argparse
 import io
+import json
 import math
+import os
 import random
 from reportlab.lib.pagesizes import A4
 from openpyxl import Workbook
@@ -39,6 +42,64 @@ def rl_color(hex_value):
         hex_value = hex_value[2:]
     return colors.HexColor(f'#{hex_value}')
 
+
+# Load optional report data from a JSON file or environment variable.
+def load_report_payload():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--input', dest='input_path')
+    args, _ = parser.parse_known_args()
+
+    input_path = args.input_path or os.environ.get('CONSTRACK_REPORT_INPUT')
+    if not input_path:
+        return {}
+
+    with open(input_path, 'r', encoding='utf-8-sig') as handle:
+        return json.load(handle)
+
+
+# Replace the default demo values with externally supplied report data.
+def apply_report_payload(payload):
+    global RUN_ID, GENERATED, T1_SCAN, T2_SCAN, OVERALL_PCT
+    global VOL_T1, VOL_T2, VOL_DELTA, FORECAST, ALIGNMENT, ZONES, TIMELINE, HEATMAP
+
+    if not payload:
+        return
+
+    def pick(*names, default=None):
+        for name in names:
+            if name in payload and payload[name] is not None:
+                return payload[name]
+        return default
+
+    RUN_ID = str(pick('run_id', 'RUN_ID', default=RUN_ID))
+    GENERATED = str(pick('generated', 'GENERATED', default=GENERATED))
+    T1_SCAN = str(pick('t1_scan', 'T1_SCAN', default=T1_SCAN))
+    T2_SCAN = str(pick('t2_scan', 'T2_SCAN', default=T2_SCAN))
+    OVERALL_PCT = float(pick('overall_pct', 'OVERALL_PCT', default=OVERALL_PCT))
+    VOL_T1 = float(pick('vol_t1', 'VOL_T1', default=VOL_T1))
+    VOL_T2 = float(pick('vol_t2', 'VOL_T2', default=VOL_T2))
+    VOL_DELTA = float(pick('vol_delta', 'VOL_DELTA', default=VOL_T2 - VOL_T1))
+    FORECAST = str(pick('forecast', 'FORECAST', default=FORECAST))
+    ALIGNMENT = str(pick('alignment', 'ALIGNMENT', default=ALIGNMENT))
+
+    zones_payload = pick('zones', 'ZONES')
+    if isinstance(zones_payload, list) and zones_payload:
+        ZONES = zones_payload
+
+    timeline_payload = pick('timeline', 'TIMELINE')
+    if isinstance(timeline_payload, dict) and timeline_payload:
+        TIMELINE = {
+            'weeks': list(timeline_payload.get('weeks', TIMELINE['weeks'])),
+            'actual': list(timeline_payload.get('actual', TIMELINE['actual'])),
+            'planned': list(timeline_payload.get('planned', TIMELINE['planned'])),
+            'cumActual': list(timeline_payload.get('cumActual', TIMELINE['cumActual'])),
+            'cumPlan': list(timeline_payload.get('cumPlan', TIMELINE['cumPlan'])),
+        }
+
+    heatmap_payload = pick('heatmap', 'HEATMAP')
+    if isinstance(heatmap_payload, list) and heatmap_payload:
+        HEATMAP = heatmap_payload
+
 W, H = A4
 
 # FAKE DATA
@@ -47,10 +108,10 @@ GENERATED     = '2026-06-05T11:22:22.283Z'
 T1_SCAN       = 'scan_early_2026'
 T2_SCAN       = 'scan_later_2026'
 OVERALL_PCT   = 65.5
-VOL_T1        = 150.450
-VOL_T2        = 120.150
-VOL_DELTA     = -30.300
-FORECAST      = '2026-08-15'
+VOL_T1        = 120.450
+VOL_T2        = 150.150
+VOL_DELTA     = +30.300
+FORECAST      = '2026-09-15'
 ALIGNMENT     = 'HIGH'
 
 ZONES = [
@@ -70,6 +131,11 @@ TIMELINE = {
     'cumPlan':  [6.0,13.0,21.0,30.0,40.0,51.0,63.0,76.0],
 }
 
+HEATMAP = None
+
+apply_report_payload(load_report_payload())
+
+# Convert a Matplotlib figure into an in-memory image for ReportLab.
 def fig_to_image(fig, dpi=150):
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight',
@@ -78,6 +144,7 @@ def fig_to_image(fig, dpi=150):
     plt.close(fig)
     return buf
 
+# Apply a consistent visual style to all charts.
 def mpl_style():
     plt.rcParams.update({
         'font.family': 'DejaVu Sans',
@@ -94,6 +161,7 @@ def mpl_style():
         'axes.spines.right': False,
     })
 
+# Plot cumulative progress against the planned schedule.
 def chart_cumulative():
     mpl_style()
     fig, ax = plt.subplots(figsize=(7, 3.2))
@@ -112,6 +180,7 @@ def chart_cumulative():
     fig.tight_layout()
     return fig_to_image(fig)
 
+# Plot weekly planned versus actual work rate.
 def chart_workrate():
     mpl_style()
     fig, ax = plt.subplots(figsize=(7, 3.0))
@@ -130,6 +199,7 @@ def chart_workrate():
     fig.tight_layout()
     return fig_to_image(fig)
 
+# Plot progress by zone so the report shows where work is ahead or behind.
 def chart_zone_progress():
     mpl_style()
     fig, ax = plt.subplots(figsize=(7, 3.2))
@@ -152,29 +222,7 @@ def chart_zone_progress():
     fig.tight_layout()
     return fig_to_image(fig)
 
-def chart_heatmap():
-    mpl_style()
-    fig, ax = plt.subplots(figsize=(7, 3.2))
-    weeks_h = ['W1','W2','W3','W4','W5','W6','W7','W8']
-    zone_names = [z['name'] for z in ZONES]
-    random.seed(42)
-    data = np.array([[random.uniform(-0.5, -8) for _ in weeks_h] for _ in zone_names])
-    data[5] = [random.uniform(-1, -3) for _ in weeks_h]
-    im = ax.imshow(data, aspect='auto', cmap='RdYlGn', vmin=-8, vmax=0)
-    ax.set_xticks(range(len(weeks_h)))
-    ax.set_xticklabels(weeks_h, fontsize=9)
-    ax.set_yticks(range(len(zone_names)))
-    ax.set_yticklabels(zone_names, fontsize=9)
-    for i in range(len(zone_names)):
-        for j in range(len(weeks_h)):
-            ax.text(j, i, f'{data[i,j]:.1f}', ha='center', va='center', fontsize=7, color='#0D1B2A', fontweight='bold')
-    cbar = fig.colorbar(im, ax=ax, orientation='vertical', pad=0.02, shrink=0.9)
-    cbar.set_label('Volume Change (m3)', fontsize=8)
-    ax.set_title('Volume Change Heatmap - Zones x Weeks (m3)', fontsize=11, fontweight='bold', color='#0D1B2A', pad=10)
-    ax.set_facecolor('#FFF0F4F8')
-    fig.tight_layout()
-    return fig_to_image(fig)
-
+# Create the donut chart used on the PDF cover page.
 def chart_donut():
     fig, ax = plt.subplots(figsize=(3.2, 3.2), facecolor='none')
     done = OVERALL_PCT
@@ -186,6 +234,7 @@ def chart_donut():
     fig.tight_layout()
     return fig_to_image(fig, dpi=180)
 
+# Reusable section header used to separate the main report chapters.
 class SectionHeader(Flowable):
     def __init__(self, number, title, page_width):
         super().__init__()
@@ -204,13 +253,12 @@ class SectionHeader(Flowable):
         c.setFont('Helvetica-Bold', 12)
         c.drawString(16, 9, f'{self.number}.  {self.title}')
 
+# Generate the PDF report using the current dataset.
 def build():
     # תיקון נתיב יציאה לנתיב מקומי נוכחי כדי למנוע קריסה בווינדוס/לינוקס
     out = 'constrack_report.pdf'
     doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=14*mm, bottomMargin=14*mm)
-    styles = getSampleStyleSheet()
     
-    # הגדרת סגנונות
     body = ParagraphStyle('body', fontName='Helvetica', fontSize=9.5, leading=14, textColor=rl_color(NAVY_HEX), spaceAfter=4)
     small = ParagraphStyle('small', fontName='Helvetica', fontSize=8.5, leading=12, textColor=rl_color(MID_GRAY))
     kv_key = ParagraphStyle('kk', fontName='Helvetica-Bold', fontSize=9, textColor=rl_color(STEEL_HEX))
@@ -223,6 +271,7 @@ def build():
     content_width = W - 36*mm
     story = []
 
+    # Render the cover banner with the main progress indicator.
     class CoverBanner(Flowable):
         def wrap(self, aw, ah): return content_width, 110
         def draw(self):
@@ -248,7 +297,8 @@ def build():
     story.append(CoverBanner())
     story.append(Spacer(1, 10))
 
-    meta_rows = [['Run ID', RUN_ID], ['T1 Scan', T1_SCAN], ['T2 Scan', T2_SCAN], ['Alignment', ALIGNMENT], ['Forecast', FORECAST]]
+    # Show only the metadata needed to identify the run.
+    meta_rows = [['Run ID', RUN_ID], ['T1 Scan', T1_SCAN], ['T2 Scan', T2_SCAN], ['Forecast', FORECAST]]
     meta_table_data = [[Paragraph(k, kv_key), Paragraph(v, kv_val)] for k, v in meta_rows]
     meta_tbl = Table(meta_table_data, colWidths=[content_width*0.28, content_width*0.72])
     meta_tbl.setStyle(TableStyle([
@@ -265,17 +315,17 @@ def build():
     story.append(meta_tbl)
     story.append(Spacer(1, 14))
 
-    story.append(SectionHeader('1', 'Progress & Completion Percentages', content_width))
+    # Summarize the key metrics requested by the user.
+    story.append(SectionHeader('1', 'Progress by Area', content_width))
     story.append(Spacer(1, 8))
 
-    cw = content_width / 4 - 3
+    cw = content_width / 3 - 3
 
     kpi_tbl = Table([[
         Table([[Paragraph(f'<font color="#00C6A7"><b>{OVERALL_PCT:.1f}%</b></font>', ParagraphStyle('k1', fontName='Helvetica-Bold', fontSize=22, textColor=rl_color(ACCENT_HEX), leading=26))], [Paragraph('Overall Progress', small)]], colWidths=[cw]),
-        Table([[Paragraph(f'<b>{len(ZONES)}</b>', ParagraphStyle('k2', fontName='Helvetica-Bold', fontSize=22, textColor=rl_color(STEEL_HEX), leading=26))], [Paragraph('Active Zones', small)]], colWidths=[cw]),
-        Table([[Paragraph(f'<font color="#F4A261"><b>{FORECAST}</b></font>', ParagraphStyle('k3', fontName='Helvetica-Bold', fontSize=16, textColor=rl_color(ACCENT2), leading=20))], [Paragraph('Est. Completion', small)]], colWidths=[cw]),
-        Table([[Paragraph(f'<font color="#06D6A0"><b>{ALIGNMENT}</b></font>', ParagraphStyle('k4', fontName='Helvetica-Bold', fontSize=18, textColor=rl_color(GREEN_OK), leading=22))], [Paragraph('Alignment Quality', small)]], colWidths=[cw]),
-    ]], colWidths=[cw+3]*4)
+        Table([[Paragraph(f'<font color="#F4A261"><b>{FORECAST}</b></font>', ParagraphStyle('k2', fontName='Helvetica-Bold', fontSize=16, textColor=rl_color(ACCENT2), leading=20))], [Paragraph('Forecast Completion', small)]], colWidths=[cw]),
+        Table([[Paragraph(f'<font color="#06D6A0"><b>{VOL_DELTA:+.3f} m³</b></font>', ParagraphStyle('k3', fontName='Helvetica-Bold', fontSize=18, textColor=rl_color(GREEN_OK), leading=22))], [Paragraph('Net Volume Change', small)]], colWidths=[cw]),
+    ]], colWidths=[cw+3]*3)
     kpi_tbl.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,-1), rl_color(LIGHT_BG)),
         ('BOX', (0,0), (-1,-1), 0.4, rl_color(MID_GRAY)),
@@ -288,22 +338,21 @@ def build():
     story.append(kpi_tbl)
     story.append(Spacer(1, 10))
 
+    # Present per-zone completion and volume change in a compact table.
     buf_zone = chart_zone_progress()
     story.append(Image(buf_zone, width=content_width, height=content_width * 0.46))
     story.append(Spacer(1, 8))
 
 
-    zone_header = [Paragraph('<b>Zone</b>', th_style), Paragraph('<b>Type</b>', th_style), Paragraph('<b>Target %</b>', th_style), Paragraph('<b>Progress %</b>', th_style), Paragraph('<b>DeltaVol (m3)</b>', th_style), Paragraph('<b>Status</b>', th_style)]
+    zone_header = [Paragraph('<b>Zone</b>', th_style), Paragraph('<b>Type</b>', th_style), Paragraph('<b>Target %</b>', th_style), Paragraph('<b>Progress %</b>', th_style), Paragraph('<b>DeltaVol (m3)</b>', th_style)]
     zone_rows = [zone_header]
     for z in ZONES:
-        status = 'On Track' if z['progress'] >= z['completion'] else 'Delayed'
-        sc = '#06D6A0' if status == 'On Track' else '#E63946'
         zone_rows.append([
             Paragraph(z['name'], body), Paragraph(z['type'], body),
             Paragraph(f"{z['completion']:.1f}%", body), Paragraph(f"<b>{z['progress']:.1f}%</b>", body),
-            Paragraph(f"{z['vol']:.3f}", body), Paragraph(f'<font color="{sc}"><b>{status}</b></font>', body),
+            Paragraph(f"{z['vol']:.3f}", body),
         ])
-    zone_tbl = Table(zone_rows, colWidths=[content_width*w for w in [0.22, 0.13, 0.12, 0.14, 0.15, 0.14]])
+    zone_tbl = Table(zone_rows, colWidths=[content_width*w for w in [0.25, 0.16, 0.14, 0.17, 0.16]])
     zone_tbl.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), rl_color(NAVY_HEX)),
         ('ROWBACKGROUNDS', (0,1), (-1,-1), [rl_color(WHITE), rl_color(LIGHT_BG)]),
@@ -316,6 +365,7 @@ def build():
     story.append(zone_tbl)
     story.append(Spacer(1, 14))
 
+    # Show the scan comparison and the resulting volume change.
     story.append(SectionHeader('2', 'Volume & Area Material Changes', content_width))
     story.append(Spacer(1, 8))
 
@@ -339,28 +389,22 @@ def build():
     story.append(vol_tbl)
     story.append(Spacer(1, 10))
 
-    buf_heat = chart_heatmap()
-    story.append(Image(buf_heat, width=content_width, height=content_width * 0.46))
-    story.append(Spacer(1, 6))
-    story.append(Paragraph('* Heatmap shows weekly volume removal per zone (m3). Green = high activity, Red = low activity.', note_style))
-    story.append(Spacer(1, 14))
-
-    story.append(SectionHeader('3', 'Forecast Completion Estimation', content_width))
+    # Explain the projected completion date based on current work rate.
+    story.append(SectionHeader('2', 'Forecast Completion Estimation', content_width))
     story.append(Spacer(1, 8))
     gap = TIMELINE['cumPlan'][-1] - TIMELINE['cumActual'][-1]
     forecast_text = (f'Based on current site velocity and the observed work rate of <b>{TIMELINE["actual"][-1]:.1f}% per week</b>, the project is estimated to reach full completion on <font color="#F4A261"><b>{FORECAST}</b></font>. The current trajectory shows a <b>{gap:.1f}% gap</b> vs. the planned schedule, primarily concentrated in the South Block and Central Hub zones.')
     story.append(Paragraph(forecast_text, body))
     story.append(Spacer(1, 14))
 
-    story.append(SectionHeader('4', 'Work Rate Trends & Analytics', content_width))
+    # Visualize the work-rate trend over time.
+    story.append(SectionHeader('3', 'Work Rate Trends', content_width))
     story.append(Spacer(1, 8))
     buf_cum  = chart_cumulative()
     buf_rate = chart_workrate()
     story.append(Image(buf_cum,  width=content_width, height=content_width * 0.46))
     story.append(Spacer(1, 8))
     story.append(Image(buf_rate, width=content_width, height=content_width * 0.43))
-    story.append(Spacer(1, 6))
-    story.append(Paragraph('* Charts reflect data from T1 to T2 scan window. Interactive dashboards with live filters are available in the web platform.', note_style))
 
     story.append(Spacer(1, 16))
     story.append(HRFlowable(width=content_width, thickness=1, color=rl_color(ACCENT_HEX), spaceAfter=6))
@@ -372,7 +416,7 @@ def build():
     print('PDF generated successfully')
 
 
-    from openpyxl import Workbook
+# Build the Excel workbook with the same trimmed report structure.
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, GradientFill
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, LineChart, Reference
@@ -409,36 +453,18 @@ def merge_title(ws, row, col_start, col_end, text, bg=NAVY_HEX, fg=WHITE, sz=12)
     cell.alignment = Alignment(horizontal='left', vertical='center')
 
 # ── DATA ────────────────────────────────────────────────────────────────────
-RUN_ID      = '665f1c2d3e4f5a6b7c8d9e0f'
-GENERATED   = '2026-06-05'
-T1_SCAN     = 'scan_early_2026'
-T2_SCAN     = 'scan_later_2026'
-OVERALL_PCT = 65.5
-VOL_T1      = 150.450
-VOL_T2      = 120.150
-VOL_DELTA   = -30.300
-FORECAST    = '2026-08-15'
-ALIGNMENT   = 'HIGH'
-
-ZONES = [
-    {'name': 'North Wing',     'type': 'Structure', 'completion': 72.0, 'progress': 80.0, 'vol': -20.100},
-    {'name': 'South Block',    'type': 'Foundation','completion': 45.0, 'progress': 45.2, 'vol': -10.200},
-    {'name': 'East Corridor',  'type': 'Frame',     'completion': 60.0, 'progress': 68.0, 'vol': -5.800},
-    {'name': 'West Annex',     'type': 'Structure', 'completion': 55.0, 'progress': 58.5, 'vol': -7.400},
-    {'name': 'Central Hub',    'type': 'Interior',  'completion': 30.0, 'progress': 35.0, 'vol': -3.200},
-    {'name': 'Roof Section A', 'type': 'Roofing',   'completion': 88.0, 'progress': 91.0, 'vol': -8.600},
-]
-
-WEEKS   = ['W1','W2','W3','W4','W5','W6','W7','W8']
-ACTUAL  = [5.2, 6.8, 7.1, 8.4, 9.0, 10.2, 11.5, 12.3]
-PLANNED = [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0]
-CUM_A   = [5.2,12.0,19.1,27.5,36.5,46.7,58.2,65.5]
-CUM_P   = [6.0,13.0,21.0,30.0,40.0,51.0,63.0,76.0]
+WEEKS   = list(TIMELINE['weeks'])
+ACTUAL  = list(TIMELINE['actual'])
+PLANNED = list(TIMELINE['planned'])
+CUM_A   = list(TIMELINE['cumActual'])
+CUM_P   = list(TIMELINE['cumPlan'])
 
 import random
 random.seed(42)
-HEATMAP = [[round(random.uniform(-0.5,-8),1) for _ in WEEKS] for _ in ZONES]
-HEATMAP[5] = [round(random.uniform(-1,-3),1) for _ in WEEKS]
+if HEATMAP is None:
+    HEATMAP = [[round(random.uniform(-0.5,-8),1) for _ in WEEKS] for _ in ZONES]
+    if len(HEATMAP) > 5:
+        HEATMAP[5] = [round(random.uniform(-1,-3),1) for _ in WEEKS]
 
 wb = Workbook()
 wb.remove(wb.active)
@@ -524,7 +550,7 @@ for i, (label, val, unit) in enumerate(vol_data, start=20):
 # ═══════════════════════════════════════════════════════════════
 ws2 = wb.create_sheet("Zone Progress")
 ws2.sheet_view.showGridLines = False
-for col, w in zip(['A','B','C','D','E','F','G'], [20,14,14,14,16,14,14]):
+for col, w in zip(['A','B','C','D','E'], [20,14,14,14,16]):
     ws2.column_dimensions[col].width = w
 
 # Title
@@ -537,25 +563,22 @@ c.alignment = Alignment(horizontal='left', vertical='center')
 ws2.row_dimensions[1].height = 32
 
 # Header row
-headers = ['Zone', 'Type', 'Target %', 'Progress %', 'ΔVol (m³)', 'Status', 'Gap']
+headers = ['Zone', 'Type', 'Target %', 'Progress %', 'ΔVol (m³)']
 for col, h in enumerate(headers, 1):
     style_cell(ws2, 3, col, value=h, bold=True, font_color=WHITE, bg=NAVY_HEX, align='center', size=10)
 ws2.row_dimensions[3].height = 22
 
 # Data rows
 for i, z in enumerate(ZONES, start=4):
-    status = 'On Track' if z['progress'] >= z['completion'] else 'Delayed'
-    status_color = GREEN_OK if status == 'On Track' else RED_ZONE
     bg = LIGHT_BG if i%2==0 else WHITE
-    gap = z['progress'] - z['completion']
 
     style_cell(ws2, i, 1, value=z['name'],        bold=True,  font_color=NAVY_HEX, bg=bg, size=9)
     style_cell(ws2, i, 2, value=z['type'],         bold=False, font_color=MID_GRAY, bg=bg, size=9, align='center')
     style_cell(ws2, i, 3, value=z['completion']/100, bold=False, font_color=STEEL_HEX, bg=bg, size=10, align='center', number_format='0.0%')
     style_cell(ws2, i, 4, value=z['progress']/100,  bold=True,  font_color=ACCENT_HEX, bg=bg, size=10, align='center', number_format='0.0%')
     style_cell(ws2, i, 5, value=z['vol'],           bold=False, font_color=RED_ZONE, bg=bg, size=9, align='center', number_format='#,##0.000')
-    style_cell(ws2, i, 6, value=status,             bold=True,  font_color=status_color, bg=bg, size=9, align='center')
-    style_cell(ws2, i, 7, value=gap/100,            bold=False, font_color=GREEN_OK if gap>=0 else RED_ZONE, bg=bg, size=9, align='center', number_format='+0.0%;-0.0%')
+    ws2.row_dimensions[i].height = 18
+
     ws2.row_dimensions[i].height = 18
 
 # Summary formula row
@@ -563,7 +586,7 @@ sr = len(ZONES) + 5
 ws2.row_dimensions[sr].height = 20
 style_cell(ws2, sr, 1, value='AVERAGE', bold=True, font_color=WHITE, bg=STEEL_HEX, align='center')
 for col, formula in [(3, f'=AVERAGE(C4:C{sr-1})'), (4, f'=AVERAGE(D4:D{sr-1})'),
-                     (5, f'=SUM(E4:E{sr-1})'), (7, f'=AVERAGE(G4:G{sr-1})')]:
+                     (5, f'=SUM(E4:E{sr-1})')]:
     c = ws2.cell(row=sr, column=col)
     c.value = formula
     c.font = Font(name='Arial', bold=True, color=WHITE, size=10)
@@ -651,85 +674,15 @@ for i, (wk, cp, ca) in enumerate(zip(WEEKS, CUM_P, CUM_A), start=gap_row+2):
     ws3.row_dimensions[row].height = 18
 
 # ═══════════════════════════════════════════════════════════════
-# SHEET 4 — VOLUME HEATMAP
-# ═══════════════════════════════════════════════════════════════
-ws4 = wb.create_sheet("Volume Heatmap")
-ws4.sheet_view.showGridLines = False
-ws4.column_dimensions['A'].width = 18
-for col_idx in range(2, 10):
-    ws4.column_dimensions[get_column_letter(col_idx)].width = 10
-
-ws4.merge_cells('A1:I1')
-c = ws4['A1']
-c.value = '  VOLUME CHANGE HEATMAP (m³) — ZONES × WEEKS'
-c.font = Font(name='Arial', bold=True, color=ACCENT_HEX, size=16)
-c.fill = PatternFill('solid', fgColor=NAVY_HEX)
-c.alignment = Alignment(horizontal='left', vertical='center')
-ws4.row_dimensions[1].height = 32
-
-# Headers
-style_cell(ws4, 3, 1, value='Zone / Week', bold=True, font_color=WHITE, bg=NAVY_HEX, align='center')
-for j, wk in enumerate(WEEKS, start=2):
-    style_cell(ws4, 3, j, value=wk, bold=True, font_color=WHITE, bg=NAVY_HEX, align='center')
-ws4.row_dimensions[3].height = 20
-
-# Heatmap color scale: interpolate between RED and GREEN based on value
-def heat_color(val, vmin=-8, vmax=0):
-    # val close to 0 = green, val close to -8 = red
-    t = (val - vmin) / (vmax - vmin)  # 0=red, 1=green
-    r = int(230 * (1-t) + 6 * t)
-    g = int(57 * (1-t) + 214 * t)
-    b = int(70 * (1-t) + 160 * t)
-    return f"{r:02X}{g:02X}{b:02X}"
-
-for i, (zone, row_data) in enumerate(zip(ZONES, HEATMAP), start=4):
-    bg = LIGHT_BG if i%2==0 else WHITE
-    style_cell(ws4, i, 1, value=zone['name'], bold=True, font_color=NAVY_HEX, bg=bg, size=9)
-    for j, val in enumerate(row_data, start=2):
-        hex_bg = heat_color(val)
-        c = ws4.cell(row=i, column=j)
-        c.value = val
-        c.font = Font(name='Arial', bold=True, color=NAVY_HEX, size=9)
-        c.fill = PatternFill('solid', fgColor=hex_bg)
-        c.alignment = Alignment(horizontal='center', vertical='center')
-        thin = Side(style='thin', color='FFFFFF')
-        c.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        c.number_format = '0.0'
-    ws4.row_dimensions[i].height = 20
-
-# Row totals
-total_row = 4 + len(ZONES)
-ws4.row_dimensions[total_row].height = 20
-style_cell(ws4, total_row, 1, value='TOTAL', bold=True, font_color=WHITE, bg=STEEL_HEX, align='center')
-for j in range(2, len(WEEKS)+2):
-    col_letter = get_column_letter(j)
-    c = ws4.cell(row=total_row, column=j)
-    c.value = f'=SUM({col_letter}4:{col_letter}{total_row-1})'
-    c.font = Font(name='Arial', bold=True, color=WHITE, size=10)
-    c.fill = PatternFill('solid', fgColor=STEEL_HEX)
-    c.alignment = Alignment(horizontal='center', vertical='center')
-    c.number_format = '#,##0.0'
-
-# Legend
-legend_row = total_row + 2
-ws4.merge_cells(f'A{legend_row}:D{legend_row}')
-c = ws4.cell(row=legend_row, column=1)
-c.value = 'Color Scale: Red = Low Activity (-8 m³) → Green = High Activity (0 m³)'
-c.font = Font(name='Arial', italic=True, color=MID_GRAY, size=8)
-c.alignment = Alignment(horizontal='left', vertical='center')
-
-# ═══════════════════════════════════════════════════════════════
 # FREEZE PANES & TAB COLORS
 # ═══════════════════════════════════════════════════════════════
 ws1.freeze_panes = 'A4'
 ws2.freeze_panes = 'A4'
 ws3.freeze_panes = 'A5'
-ws4.freeze_panes = 'B4'
 
 ws1.sheet_properties.tabColor = ACCENT_HEX
 ws2.sheet_properties.tabColor = STEEL_HEX
 ws3.sheet_properties.tabColor = ACCENT2
-ws4.sheet_properties.tabColor = RED_ZONE
 
 out = "constrack_report.xlsx"
 wb.save(out)
