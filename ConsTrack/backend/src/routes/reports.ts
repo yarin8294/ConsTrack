@@ -36,6 +36,7 @@ router.post("/", authenticateToken, async (req, res) => {
     ZoneModel.find({ projectId }).lean(),
     ProjectModel.findById(projectId).lean(),
   ]);
+
   const { pdfPath, xlsxPath } = await generateReportFiles({
     outDir: REPORTS_DIR,
     projectName: project?.name ?? projectId,
