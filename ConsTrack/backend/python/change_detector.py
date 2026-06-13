@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Identifies newly constructed elements by comparing an ICP-aligned T2 scan
-against the T1 baseline, clusters the isolated new points with DBSCAN,
-computes per-cluster volumes, and exports a coloured PLY file for visual
+Performs BIDIRECTIONAL change detection between an ICP-aligned T2 scan and the
+T1 baseline: it reports both ADDED geometry (new construction — points in T2
+with no nearby T1 neighbour) and REMOVED geometry (demolition / missing scan
+data — points in T1 with no nearby T2 neighbour). Each side is independently
+DBSCAN-clustered, volume-measured, and exported as a coloured PLY for visual
 verification in CloudCompare.
 
 CLI (called by python.ts via child_process.spawn):
     python change_detector.py \
         --t1          /path/scan1.ply               baseline (reference)
         --t2_aligned  /path/scan2_aligned.ply        Phase 1 output
-        --out_new     /path/scan2_new_elements.ply   new geometry export
+        --out_added   /path/scan2_added.ply          new geometry export
+        --out_removed /path/scan2_removed.ply        removed geometry export
         [--dist_thresh 0.05]   distance threshold in metres (default 5 cm)
         [--voxel       0.05]   voxel size for volume computation (default 5 cm)
         [--eps         0.15]   DBSCAN neighbourhood radius in metres
@@ -32,6 +35,13 @@ import open3d as o3d
 from scipy.spatial import cKDTree
 from sklearn.cluster import DBSCAN
 
+# Silence Open3D's C++ logger. Its [Open3D WARNING]/[Open3D INFO] lines are
+# written to STDOUT, which is reserved here for the single JSON object Node
+# parses — an unsuppressed warning (e.g. on an empty write) would corrupt that
+# payload and crash JSON.parse on the Node side. Belt-and-braces with the
+# brace-extraction parsing in python.ts.
+o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+
 #All progress / warnings to stderr; stdout is reserved for JSON
 logging.basicConfig(
     stream=sys.stderr,
@@ -40,6 +50,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
+
+# Delta clouds larger than this are voxel-downsampled before DBSCAN to bound its
+# time/memory (it otherwise hangs or OOMs on dense 100k+ point clouds). Tunable.
+CLUSTER_DOWNSAMPLE_THRESHOLD = 100_000
 
 #Load point clouds
 def load_ply(path: str) -> o3d.geometry.PointCloud:
@@ -108,13 +122,16 @@ def compute_nn_distances(pts_t2: np.ndarray, pts_t1: np.ndarray) -> np.ndarray:
 
 
 #Distance threshold filtering
-def filter_new_points(
-    pcd_t2: o3d.geometry.PointCloud,
+def filter_distant_points(
+    pcd: o3d.geometry.PointCloud,
     distances: np.ndarray,
     dist_thresh: float,
 ) -> tuple[o3d.geometry.PointCloud, np.ndarray]:
     """
-    Retain only T2 points whose nearest T1 neighbour is beyond dist_thresh.
+    Retain only points whose nearest neighbour in the OTHER cloud is beyond
+    dist_thresh. Direction-agnostic, which is what makes the bidirectional
+    engine possible: pass (T2, dist-to-T1) to isolate ADDED geometry, or
+    (T1, dist-to-T2) to isolate REMOVED geometry.
 
     Choosing the threshold — the gap between noise floor and signal
     --------------------------------------------------------------
@@ -151,27 +168,27 @@ def filter_new_points(
     Increase to 8–10 cm for scans with more residual misalignment.
     Decrease to 2–3 cm only when ICP RMSE < 3 mm AND structures are thin.
     """
-    pts_all = np.asarray(pcd_t2.points)
-    new_mask = distances > dist_thresh
+    pts_all = np.asarray(pcd.points)
+    mask = distances > dist_thresh
 
-    n_new = int(new_mask.sum())
+    n_sel = int(mask.sum())
     n_total = len(distances)
     log.info(
-        "Threshold %.0f cm: %s / %s pts → new construction (%.1f%%)",
+        "Threshold %.0f cm: %s / %s pts beyond nearest neighbour (%.1f%%)",
         dist_thresh * 100,
-        f"{n_new:,}", f"{n_total:,}",
-        100.0 * n_new / max(n_total, 1),
+        f"{n_sel:,}", f"{n_total:,}",
+        100.0 * n_sel / max(n_total, 1),
     )
 
-    pcd_new = o3d.geometry.PointCloud()
-    pcd_new.points = o3d.utility.Vector3dVector(pts_all[new_mask])
+    pcd_sel = o3d.geometry.PointCloud()
+    pcd_sel.points = o3d.utility.Vector3dVector(pts_all[mask])
 
     # Preserve scanner colours when present — aids visual verification
-    if pcd_t2.has_colors():
-        cols_all = np.asarray(pcd_t2.colors)
-        pcd_new.colors = o3d.utility.Vector3dVector(cols_all[new_mask])
+    if pcd.has_colors():
+        cols_all = np.asarray(pcd.colors)
+        pcd_sel.colors = o3d.utility.Vector3dVector(cols_all[mask])
 
-    return pcd_new, new_mask
+    return pcd_sel, mask
 
 
 
@@ -428,111 +445,170 @@ def export_colored_ply(pts_new: np.ndarray, labels: np.ndarray, out_path: str) -
 
 
 # PIPELINE ORCHESTRATOR
+def analyze_delta(
+    pcd_delta: o3d.geometry.PointCloud,
+    out_path: str,
+    eps: float,
+    min_pts: int,
+    voxel_size: float,
+    label: str,
+) -> dict:
+    """
+    Cluster one delta cloud, measure its volumes, and — only when it is
+    non-empty — export a coloured PLY. Shared by the ADDED and REMOVED passes.
+
+    Safe file I/O
+    -------------
+    If the delta cloud has zero points we DO NOT call write_point_cloud. An
+    empty write makes Open3D emit "[Open3D WARNING] Write PLY failed: ..." (on
+    stdout) and leaves a useless file behind; we return path=None instead so the
+    caller knows nothing was written for this side.
+
+    Performance — pre-voxelisation guard
+    ------------------------------------
+    DBSCAN builds a neighbour graph whose time/memory grows quickly with point
+    count; on dense delta clouds (100k+ points) it hangs or OOMs. Above
+    CLUSTER_DOWNSAMPLE_THRESHOLD we cluster a grid-snapped copy instead — one
+    representative point per `voxel_size` cell, the SAME grid the voxel-volume
+    metric uses — so that metric is provably unchanged: every dropped point
+    shares a cell with a kept one. `pointCount` still reports the RAW delta size;
+    element/volume stats and the exported PLY are computed on the compressed cloud.
+    """
+    pts_raw = np.asarray(pcd_delta.points)
+    n_raw = len(pts_raw)
+
+    if n_raw == 0:
+        log.info("%s: 0 points beyond threshold — no DBSCAN, no PLY written.", label)
+        return {
+            "volumeM3":        0.0,
+            "pointCount":      0,
+            "elementCount":    0,
+            "noisePointCount": 0,
+            "clusters":        [],
+            "path":            None,
+        }
+
+    # Pre-voxelisation guard: keep DBSCAN tractable on dense clouds. We grid-snap
+    # to one representative point per voxel cell of edge `voxel_size` — the SAME
+    # grid compute_cluster_volumes() counts — so the voxel-volume metric is
+    # exactly preserved (every dropped point shares a cell with the kept one).
+    # NB: Open3D's voxel_down_sample() returns per-cell CENTROIDS on its own grid
+    # origin; re-flooring those at the volume grid shifts occupancy and skews the
+    # measured volume (~25% low in testing), so we grid-align the dedup here.
+    pts = pts_raw
+    if n_raw > CLUSTER_DOWNSAMPLE_THRESHOLD:
+        voxel_idx = np.floor(pts_raw / voxel_size).astype(np.int64)
+        _, keep = np.unique(voxel_idx, axis=0, return_index=True)
+        pts = pts_raw[keep]
+        log.info(
+            "%s: pre-voxelising for DBSCAN — %s -> %s pts at %.0f cm voxel "
+            "(%.1fx compression)",
+            label, f"{n_raw:,}", f"{len(pts):,}", voxel_size * 100,
+            n_raw / max(len(pts), 1),
+        )
+
+    labels = cluster_dbscan(pts, eps, min_pts)
+    clusters = compute_cluster_volumes(pts, labels, voxel_size)
+    total_vol = sum(c["voxelVolumeM3"] for c in clusters)
+    n_noise = int((labels == -1).sum())
+
+    export_colored_ply(pts, labels, out_path)
+
+    log.info(
+        "%s: %s pts (raw) -> %d elements, %.4f m3 -> %s",
+        label, f"{n_raw:,}", len(clusters), total_vol, out_path,
+    )
+    return {
+        "volumeM3":        round(total_vol, 6),
+        "pointCount":      n_raw,
+        "elementCount":    len(clusters),
+        "noisePointCount": n_noise,
+        "clusters":        clusters,
+        "path":            os.path.abspath(out_path),
+    }
+
+
 def detect_changes(
     path_t1: str,
     path_t2_aligned: str,
-    out_new: str,
+    out_added: str,
+    out_removed: str,
     dist_thresh: float = 0.05,
     voxel_size: float = 0.05,
     eps: float = 0.15,
     min_pts: int = 20,
 ) -> dict:
     """
-    Run the full change-detection pipeline and return metrics as a JSON-ready dict.
+    Run BIDIRECTIONAL change detection and return a JSON-ready dict.
 
-    Output files
-    ------------
-    out_new (.ply)   Per-cluster coloured binary PLY of all new construction
-                     points.  Load alongside scan1.ply in CloudCompare to
-                     visually validate the algorithm before trusting the volumes.
+    Two independent nearest-neighbour passes make the engine agnostic to the
+    direction of change:
+
+      ADDED   (new construction): build a KD-Tree on T1, query every T2 point.
+              A T2 point whose nearest T1 neighbour is > dist_thresh away sits on
+              geometry that did not exist at T1.
+
+      REMOVED (demolition / missing scan data): build a KD-Tree on T2, query
+              every T1 point. A T1 point whose nearest T2 neighbour is
+              > dist_thresh away sits on geometry no longer present at T2.
+
+    Each delta cloud is independently DBSCAN-clustered, volume-measured, and
+    (only when non-empty) exported to its own coloured PLY.
 
     Returned dict
     -------------
-    totalNewVolumeM3    Sum of voxel volumes across all valid clusters (m³).
-                        This is the primary metric fed into the run progress %.
-    newElementCount     Number of distinct structural clusters detected.
-    noisePointCount     Points classified as DBSCAN noise (label = -1).
-                        High values indicate a too-tight threshold or poor alignment.
-    clusters            List of per-cluster dicts (sorted largest first):
-                          clusterId, pointCount, centroidXYZ,
-                          voxelVolumeM3, obbVolumeM3, obbExtentM
-    newElementsPath     Absolute path of the written PLY file.
-    elapsedS            Wall-clock seconds for the full pipeline.
+    added    {volumeM3, pointCount, elementCount, noisePointCount, clusters, path}
+    removed  {volumeM3, pointCount, elementCount, noisePointCount, clusters, path}
+    elapsedS Wall-clock seconds for the full bidirectional pipeline.
+
+    `path` is null for a side with zero delta points (no file was written).
     """
     t_start = time.time()
-    log.info("=== Change detection pipeline START ===")
+    log.info("=== Bidirectional change detection START ===")
 
-    #Load
     pcd_t1 = load_ply(path_t1)
     pcd_t2 = load_ply(path_t2_aligned)
 
     pts_t1 = np.asarray(pcd_t1.points)
     pts_t2 = np.asarray(pcd_t2.points)
 
-    #KD-Tree distance from every T2 point to its nearest T1 neighbour
-    distances = compute_nn_distances(pts_t2, pts_t1)
+    # ADDED pass — T2 points with no nearby T1 neighbour are new construction.
+    log.info("--- ADDED pass: KD-Tree(T1), query T2 ---")
+    dist_t2_to_t1 = compute_nn_distances(pts_t2, pts_t1)
+    added_pcd, _ = filter_distant_points(pcd_t2, dist_t2_to_t1, dist_thresh)
+    added = analyze_delta(added_pcd, out_added, eps, min_pts, voxel_size, "ADDED")
 
-    #Filter: keep only T2 points farther than dist_thresh from T1
-    pcd_new, _ = filter_new_points(pcd_t2, distances, dist_thresh)
-    pts_new = np.asarray(pcd_new.points)
+    # REMOVED pass — T1 points with no nearby T2 neighbour are gone (demolished
+    # or simply not captured in the later scan).
+    log.info("--- REMOVED pass: KD-Tree(T2), query T1 ---")
+    dist_t1_to_t2 = compute_nn_distances(pts_t1, pts_t2)
+    removed_pcd, _ = filter_distant_points(pcd_t1, dist_t1_to_t2, dist_thresh)
+    removed = analyze_delta(removed_pcd, out_removed, eps, min_pts, voxel_size, "REMOVED")
 
-    if len(pts_new) == 0:
-        log.warning(
-            "No new points found above %.0f cm threshold. "
-            "Verify alignment quality (Phase 1) and that T2 is actually newer than T1.",
-            dist_thresh * 100,
-        )
-        _write_empty_ply(out_new)
-        return {
-            "totalNewVolumeM3": 0.0,
-            "newElementCount":  0,
-            "noisePointCount":  0,
-            "clusters":         [],
-            "newElementsPath":  os.path.abspath(out_new),
-            "elapsedS":         round(time.time() - t_start, 2),
-        }
-
-    # DBSCAN: group new points into distinct structural elements
-    labels = cluster_dbscan(pts_new, eps, min_pts)
-
-    #Volume computation for each valid cluster
-    clusters = compute_cluster_volumes(pts_new, labels, voxel_size)
-
-    total_vol = sum(c["voxelVolumeM3"] for c in clusters)
-    n_noise = int((labels == -1).sum())
-
-    #Export coloured PLY for visual verification 
-    export_colored_ply(pts_new, labels, out_new)
-
-    elapsed = time.time() - t_start
-    log.info("=== Change detection DONE (%.1f s) — %.4f m³ across %d elements ===",
-             elapsed, total_vol, len(clusters))
+    elapsed = round(time.time() - t_start, 2)
+    log.info(
+        "=== Bidirectional change detection DONE (%.1f s) -- "
+        "added %.4f m3 / removed %.4f m3 ===",
+        elapsed, added["volumeM3"], removed["volumeM3"],
+    )
 
     return {
-        "totalNewVolumeM3": round(total_vol, 6),
-        "newElementCount":  len(clusters),
-        "noisePointCount":  n_noise,
-        "clusters":         clusters,
-        "newElementsPath":  os.path.abspath(out_new),
-        "elapsedS":         round(elapsed, 2),
+        "added":    added,
+        "removed":  removed,
+        "elapsedS": elapsed,
     }
-
-
-def _write_empty_ply(path: str) -> None:
-    """Write a valid but empty PLY so the calling code always gets a file path."""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    o3d.io.write_point_cloud(path, o3d.geometry.PointCloud())
 
 
 # CLI  —  called by python.ts via child_process.spawn
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Phase 2: detect new construction and compute volumes."
+        description="Phase 2: bidirectional change detection (added + removed)."
     )
     ap.add_argument("--t1",          required=True,              help="Baseline scan (.ply)")
     ap.add_argument("--t2_aligned",  required=True,              help="ICP-aligned later scan (.ply)")
-    ap.add_argument("--out_new",     required=True,              help="Output path for new-elements .ply")
-    ap.add_argument("--dist_thresh", type=float, default=0.05,   help="New-point distance threshold in metres (default 0.05)")
+    ap.add_argument("--out_added",   required=True,              help="Output path for ADDED (new) elements .ply")
+    ap.add_argument("--out_removed", required=True,              help="Output path for REMOVED (demolished/missing) elements .ply")
+    ap.add_argument("--dist_thresh", type=float, default=0.05,   help="Delta distance threshold in metres (default 0.05)")
     ap.add_argument("--voxel",       type=float, default=0.05,   help="Voxel size for volume in metres (default 0.05)")
     ap.add_argument("--eps",         type=float, default=0.15,   help="DBSCAN neighbourhood radius in metres (default 0.15)")
     ap.add_argument("--min_pts",     type=int,   default=20,     help="DBSCAN minimum cluster size (default 20)")
@@ -542,7 +618,8 @@ def main() -> int:
         result = detect_changes(
             path_t1=args.t1,
             path_t2_aligned=args.t2_aligned,
-            out_new=args.out_new,
+            out_added=args.out_added,
+            out_removed=args.out_removed,
             dist_thresh=args.dist_thresh,
             voxel_size=args.voxel,
             eps=args.eps,
@@ -557,5 +634,39 @@ def main() -> int:
         return 2
 
 
+def _hard_exit(code: int) -> None:
+    """
+    Flush the JSON channel, tear down the joblib/loky worker pool, then exit now.
+
+    Why this exists
+    ---------------
+    DBSCAN(n_jobs=-1) spins up a joblib/loky pool of worker SUBPROCESSES. Those
+    workers inherit this process's stdout/stderr pipe file descriptors, and loky
+    keeps the pool idle-alive (~300 s) for reuse. While a worker lives it holds
+    the pipe write-end open, so the Node parent's child 'close' event never fires
+    and the HTTP request hangs ("socket hang up") even though our work is done and
+    the JSON is already on stdout.
+
+    We therefore (1) flush stdout, (2) shut the pool down so no worker outlives
+    us, and (3) os._exit() to skip the slow/occasionally-hanging library atexit
+    handlers (Open3D, OpenMP, loky) — guaranteeing the process terminates the
+    instant the result is emitted.
+    """
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        from joblib.externals.loky import get_reusable_executor
+        executor = get_reusable_executor()
+        try:
+            executor.shutdown(wait=True, kill_workers=True)
+        except TypeError:  # older loky without kill_workers
+            executor.shutdown(wait=True)
+    except Exception:
+        pass
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _hard_exit(main())

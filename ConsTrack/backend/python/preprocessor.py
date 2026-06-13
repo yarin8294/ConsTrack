@@ -477,5 +477,22 @@ def main() -> int:
         return 2
 
 
+def _hard_exit(code: int) -> None:
+    """
+    Flush the JSON channel, then terminate immediately via os._exit().
+
+    Open3D / OpenMP occasionally stall at interpreter shutdown (background
+    threads not joined cleanly). os._exit() skips those atexit handlers so the
+    process dies the instant the aligned cloud is written and the JSON emitted —
+    which makes the Node parent's child 'exit' event fire promptly instead of
+    waiting on a slow teardown.
+    """
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _hard_exit(main())

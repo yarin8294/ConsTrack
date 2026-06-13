@@ -1,9 +1,13 @@
 import fs from "fs";
 import { Router } from "express";
 import { authenticateToken } from "../middleware/auth.js";
+import { upload } from "../middleware/upload.js";
+import { uploadNewScan } from "../controllers/scanController.js";
 import { ProjectModel, ZoneModel, ScanModel, RunModel, ReportModel } from "../models.js";
 
 export const router = Router();
+
+// ── Project CRUD ─────────────────────────────────────────────────────────────
 
 router.get("/", authenticateToken, async (req, res) => {
   try {
@@ -151,3 +155,12 @@ router.delete("/:id", authenticateToken, async (req, res) => {
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
+
+// ── Scan Upload (Rolling Baseline Pipeline) ───────────────────────────────────
+
+router.post(
+  "/:projectId/scans",
+  authenticateToken,
+  upload.single("scanFile"),
+  uploadNewScan
+);

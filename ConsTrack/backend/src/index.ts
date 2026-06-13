@@ -14,8 +14,11 @@ async function main() {
     console.log(`Backend listening on http://localhost:${PORT}`);
   });
 
-  server.timeout = 300000;
-  server.keepAliveTimeout = 300000;
+  // Large construction scans (20M+ points) run a sequential standardize →
+  // preprocess → change-detect pipeline that can take many minutes. 30 min keeps
+  // the socket alive across the whole request; per-step backstop is in python.ts.
+  server.timeout = 1800000;
+  server.keepAliveTimeout = 1800000;
 
   const wss = new WebSocketServer({ server, path: "/ws" });
   registerWs(wss);

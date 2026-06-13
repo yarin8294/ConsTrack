@@ -1,7 +1,156 @@
 import path from "path";
-import { spawn } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 
 const ROOT = path.resolve(process.cwd());
+
+// Hard ceiling per Python step. Acts as a backstop so a genuinely stuck or
+// pathologically-slow computation (e.g. DBSCAN ball_tree on millions of "new"
+// points) returns a clean 500 + reaps the process instead of zombie-hanging
+// until the socket dies. 20 min covers RANSAC/ICP on large (20M+ point) clouds;
+// kept under the 30 min Express server.timeout (index.ts) so the client gets a
+// JSON error rather than a TCP "socket hang up". NOTE: steps run sequentially,
+// so the worst-case request is ~3x this — see index.ts for the request budget.
+const DEFAULT_TIMEOUT_MS = Number(process.env.PYTHON_TIMEOUT_MS || 20 * 60_000);
+
+// After the child process exits we wait this long for the OS pipe to deliver
+// the final stdout chunk (the JSON payload) before parsing. The data is already
+// in the pipe buffer at exit, so this only needs to cover one IO poll.
+const STDOUT_FLUSH_GRACE_MS = 500;
+
+function killTree(child: ChildProcess): void {
+  if (child.pid == null) return;
+  try {
+    if (process.platform === "win32") {
+      // SIGKILL on Windows doesn't reap the child's own subprocesses; taskkill /t does.
+      spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore" });
+    } else {
+      child.kill("SIGKILL");
+    }
+  } catch {
+    /* best effort — we're already rejecting */
+  }
+}
+
+/**
+ * Spawn a Python script and resolve with its parsed JSON stdout.
+ *
+ * Why this settles on 'exit' and not just 'close'
+ * ------------------------------------------------
+ * Node's 'close' event fires only after the child has exited AND every copy of
+ * its stdout/stderr pipe write-end has been closed. change_detector.py runs
+ * sklearn DBSCAN with n_jobs=-1, which spins up a joblib/loky worker POOL. Those
+ * worker subprocesses are grandchildren of Node and inherit copies of the
+ * stdout/stderr pipe FDs. loky keeps the pool idle-alive (~300 s) for reuse, so
+ * even after the main Python process exits and has flushed its JSON, the pipe
+ * write-end stays open — 'close' never fires, the Promise never settles, and the
+ * HTTP request hangs until the socket times out ("socket hang up"). That is the
+ * zombie request.
+ *
+ * The main process exiting is the authoritative "work is done" signal: by then
+ * the JSON has been printed and the output file written. So we settle on 'exit'
+ * (after a short grace period to collect the trailing stdout chunk) and stop
+ * caring whether lingering grandchildren ever close the pipe. 'close' stays as
+ * the fast path for scripts that don't spawn subprocesses. A timeout kills the
+ * whole process tree as a last resort.
+ */
+function runPython<T = unknown>(
+  label: string,
+  scriptName: string,
+  args: string[],
+  opts: { timeoutMs?: number } = {}
+): Promise<T> {
+  const py = process.env.PYTHON_BIN || "python3";
+  const script = path.join(ROOT, "python", scriptName);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  return new Promise<T>((resolve, reject) => {
+    const child = spawn(py, [script, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+
+    let out = "";
+    let err = "";
+    let settled = false;
+    let timer: NodeJS.Timeout;
+
+    child.stdout.on("data", (d) => {
+      out += String(d);
+    });
+    child.stderr.on("data", (d) => {
+      const chunk = String(d);
+      err += chunk;
+      // Surface Python's progress log live instead of swallowing it until failure.
+      // This is what makes the freeze point visible: you see the last line Python
+      // printed (e.g. "DBSCAN: eps=15 cm ...") and then silence.
+      process.stderr.write(`[py:${label}] ${chunk}`);
+    });
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      // Drop our read handles so a lingering grandchild that inherited the pipe
+      // can't keep this stream — or the event loop — pinned after we've settled.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
+    const settle = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+
+      // Python uses exit code 2 to carry a structured {"error": "..."} payload.
+      if (code !== 0 && code !== 2) {
+        return reject(new Error(`${label} exited with code ${code}.\n${err.trim()}`));
+      }
+      let parsed: { error?: string } & Record<string, unknown>;
+      try {
+        // Bulletproof parse: stdout may carry stray non-JSON noise (e.g. a C++
+        // "[Open3D WARNING] ..." line that slipped past verbosity suppression).
+        // The payload is a single JSON object, so slice from the first "{" to
+        // the last "}" and parse only that span.
+        const raw = out.trim();
+        const start = raw.indexOf("{");
+        const end = raw.lastIndexOf("}");
+        const jsonText = start !== -1 && end > start ? raw.slice(start, end + 1) : raw;
+        parsed = JSON.parse(jsonText || "{}");
+      } catch {
+        return reject(
+          new Error(`${label}: could not parse JSON from stdout.\nstdout: ${out}\nstderr: ${err}`)
+        );
+      }
+      if (parsed.error) return reject(new Error(`${label}: ${parsed.error}`));
+      resolve(parsed as T);
+    };
+
+    // Fast path: process exited and all stdio drained/closed.
+    child.on("close", (code) => settle(code));
+
+    // Safety net for the zombie request: main process exited (we have its code +
+    // flushed stdout) but a grandchild holds the pipe, so 'close' won't come.
+    child.on("exit", (code) => {
+      setTimeout(() => settle(code), STDOUT_FLUSH_GRACE_MS);
+    });
+
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(
+        new Error(
+          `Failed to start ${label} ("${py}"): ${e.message}. ` +
+            `Ensure Python 3 is on PATH (or set PYTHON_BIN) and that open3d, numpy, ` +
+            `scipy, scikit-learn and laspy are installed.`
+        )
+      );
+    });
+
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      killTree(child);
+      reject(new Error(`${label} timed out after ${timeoutMs} ms and was killed.`));
+    }, timeoutMs);
+  });
+}
 
 export interface StandardizeResult {
   cleanedPlyPath: string;
@@ -15,74 +164,25 @@ export async function runPythonStandardize(
   outputPath: string,
   opts: { sorK?: number; sorStd?: number } = {}
 ): Promise<StandardizeResult> {
-  const py = process.env.PYTHON_BIN || "python3";
-  const script = path.join(ROOT, "python", "standardizer.py");
-
-  const args = [
-    script,
-    "--input",   inputPath,
-    "--output",  outputPath,
-    "--sor_k",   String(opts.sorK  ?? 20),
+  return runPython<StandardizeResult>("standardizer", "standardizer.py", [
+    "--input", inputPath,
+    "--output", outputPath,
+    "--sor_k", String(opts.sorK ?? 20),
     "--sor_std", String(opts.sorStd ?? 2.0),
-  ];
-
-  return new Promise<StandardizeResult>((resolve, reject) => {
-    const p = spawn(py, args, { stdio: ["ignore", "pipe", "pipe"] });
-
-    let out = "";
-    let err = "";
-    p.stdout.on("data", (d) => (out += String(d)));
-    p.stderr.on("data", (d) => (err += String(d)));
-
-    p.on("close", (code) => {
-      if (code !== 0 && code !== 2) {
-        return reject(new Error(`Standardizer failed: code=${code} stderr=${err}`));
-      }
-      try {
-        const parsed = JSON.parse(out.trim() || "{}");
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve(parsed as StandardizeResult);
-      } catch {
-        reject(new Error(`Failed to parse standardizer output. out=${out} err=${err}`));
-      }
-    });
-
-    p.on("error", (error) => {
-      reject(new Error(`Failed to start Python process: ${error.message}`));
-    });
-  });
+  ]);
 }
 
 export async function runPythonVolumeDiff(t1Path: string, t2Path: string, voxelSize: number) {
-  const py = process.env.PYTHON_BIN || "python3";
-  const script = path.join(ROOT, "python", "volume_diff.py");
-
-  return new Promise<{ volumeT1M3: number; volumeT2M3: number; volumeChangeM3: number }>((resolve, reject) => {
-    const p = spawn(py, [script, "--t1", t1Path, "--t2", t2Path, "--voxel", String(voxelSize)], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let out = "";
-    let err = "";
-    p.stdout.on("data", (d) => (out += String(d)));
-    p.stderr.on("data", (d) => (err += String(d)));
-    p.on("close", (code) => {
-      if (code !== 0 && code !== 2) {
-        return reject(new Error(`Python process failed: code=${code} err=${err}`));
-      }
-      try {
-        const parsed = JSON.parse(out.trim() || "{}");
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve({
-          volumeT1M3: Number(parsed.volumeT1M3 || 0),
-          volumeT2M3: Number(parsed.volumeT2M3 || 0),
-          volumeChangeM3: Number(parsed.volumeChangeM3 || 0),
-        });
-      } catch {
-        reject(new Error(`Failed to parse python output. out=${out} err=${err}`));
-      }
-    });
-  });
+  const parsed = await runPython<Record<string, unknown>>("volume_diff", "volume_diff.py", [
+    "--t1", t1Path,
+    "--t2", t2Path,
+    "--voxel", String(voxelSize),
+  ]);
+  return {
+    volumeT1M3: Number(parsed.volumeT1M3 || 0),
+    volumeT2M3: Number(parsed.volumeT2M3 || 0),
+    volumeChangeM3: Number(parsed.volumeChangeM3 || 0),
+  };
 }
 
 export interface PreprocessResult {
@@ -101,45 +201,15 @@ export async function runPythonPreprocess(
   outT2Path: string,
   opts: { voxelSize?: number; sorK?: number; sorStd?: number; icpDist?: number } = {}
 ): Promise<PreprocessResult> {
-  const py = process.env.PYTHON_BIN || "python3";
-  const script = path.join(ROOT, "python", "preprocessor.py");
-
-  const args = [
-    script,
+  return runPython<PreprocessResult>("preprocessor", "preprocessor.py", [
     "--t1", t1Path,
     "--t2", t2Path,
     "--out_t2", outT2Path,
-    "--voxel",    String(opts.voxelSize ?? 0.05),
-    "--sor_k",    String(opts.sorK    ?? 20),
-    "--sor_std",  String(opts.sorStd  ?? 2.0),
+    "--voxel", String(opts.voxelSize ?? 0.05),
+    "--sor_k", String(opts.sorK ?? 20),
+    "--sor_std", String(opts.sorStd ?? 2.0),
     "--icp_dist", String(opts.icpDist ?? 0.10),
-  ];
-
-  return new Promise<PreprocessResult>((resolve, reject) => {
-    const p = spawn(py, args, { stdio: ["ignore", "pipe", "pipe"] });
-
-    let out = "";
-    let err = "";
-    p.stdout.on("data", (d) => (out += String(d)));
-    p.stderr.on("data", (d) => (err += String(d)));
-
-    p.on("close", (code) => {
-      if (code !== 0 && code !== 2) {
-        return reject(new Error(`Preprocessor failed: code=${code} stderr=${err}`));
-      }
-      try {
-        const parsed = JSON.parse(out.trim() || "{}");
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve(parsed as PreprocessResult);
-      } catch {
-        reject(new Error(`Failed to parse preprocessor output. out=${out} err=${err}`));
-      }
-    });
-
-    p.on("error", (error) => {
-      reject(new Error(`Failed to start Python process: ${error.message}`));
-    });
-  });
+  ]);
 }
 
 export interface ClusterInfo {
@@ -151,89 +221,47 @@ export interface ClusterInfo {
   obbExtentM: [number, number, number];
 }
 
-export interface ChangeDetectResult {
-  totalNewVolumeM3: number;
-  newElementCount: number;
+/** One direction of the bidirectional comparison (added OR removed). */
+export interface DeltaResult {
+  volumeM3: number;
+  pointCount: number;
+  elementCount: number;
   noisePointCount: number;
   clusters: ClusterInfo[];
-  newElementsPath: string;
+  /** PLY path Python wrote, or null when this side had zero delta points. */
+  path: string | null;
+}
+
+export interface ChangeDetectResult {
+  added: DeltaResult;
+  removed: DeltaResult;
   elapsedS: number;
 }
 
 export async function runPythonChangeDetect(
   t1Path: string,
   t2AlignedPath: string,
-  outNewPath: string,
+  outAddedPath: string,
+  outRemovedPath: string,
   opts: { distThresh?: number; voxelSize?: number; eps?: number; minPts?: number } = {}
 ): Promise<ChangeDetectResult> {
-  const py = process.env.PYTHON_BIN || "python3";
-  const script = path.join(ROOT, "python", "change_detector.py");
-
-  const args = [
-    script,
-    "--t1",          t1Path,
-    "--t2_aligned",  t2AlignedPath,
-    "--out_new",     outNewPath,
+  return runPython<ChangeDetectResult>("change_detector", "change_detector.py", [
+    "--t1", t1Path,
+    "--t2_aligned", t2AlignedPath,
+    "--out_added", outAddedPath,
+    "--out_removed", outRemovedPath,
     "--dist_thresh", String(opts.distThresh ?? 0.05),
-    "--voxel",       String(opts.voxelSize  ?? 0.05),
-    "--eps",         String(opts.eps        ?? 0.15),
-    "--min_pts",     String(opts.minPts     ?? 20),
-  ];
-
-  return new Promise<ChangeDetectResult>((resolve, reject) => {
-    const p = spawn(py, args, { stdio: ["ignore", "pipe", "pipe"] });
-
-    let out = "";
-    let err = "";
-    p.stdout.on("data", (d) => (out += String(d)));
-    p.stderr.on("data", (d) => (err += String(d)));
-
-    p.on("close", (code) => {
-      if (code !== 0 && code !== 2) {
-        return reject(new Error(`Change detector failed: code=${code} stderr=${err}`));
-      }
-      try {
-        const parsed = JSON.parse(out.trim() || "{}");
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve(parsed as ChangeDetectResult);
-      } catch {
-        reject(new Error(`Failed to parse change detector output. out=${out} err=${err}`));
-      }
-    });
-
-    p.on("error", (error) => {
-      reject(new Error(`Failed to start Python process: ${error.message}`));
-    });
-  });
+    "--voxel", String(opts.voxelSize ?? 0.05),
+    "--eps", String(opts.eps ?? 0.15),
+    "--min_pts", String(opts.minPts ?? 20),
+  ]);
 }
 
 export async function runPythonExtractPoints(filePath: string, maxPoints: number = 350000) {
-  const py = process.env.PYTHON_BIN || "python3";
-  const script = path.join(ROOT, "python", "volume_diff.py");
-
-  return new Promise<{ points: number[][]; colors?: number[][] }>((resolve, reject) => {
-    const p = spawn(py, [script, "--extract", filePath, "--max_extract_points", String(maxPoints)], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let out = "";
-    let err = "";
-    p.stdout.on("data", (d) => (out += String(d)));
-    p.stderr.on("data", (d) => (err += String(d)));
-    p.on("close", (code) => {
-      if (code !== 0 && code !== 2) {
-        return reject(new Error(`Python process failed: code=${code}, stderr=${err}, stdout=${out}`));
-      }
-      try {
-        const parsed = JSON.parse(out.trim() || "{}");
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve({ points: parsed.points || [], colors: parsed.colors });
-      } catch {
-        reject(new Error(`Failed to parse python output. out=${out} err=${err}`));
-      }
-    });
-    p.on("error", (error) => {
-      reject(new Error(`Failed to start Python process: ${error.message}. Make sure Python 3 is installed and the required packages (laspy, open3d, numpy) are available.`));
-    });
-  });
+  const parsed = await runPython<{ points?: number[][]; colors?: number[][] }>(
+    "extract_points",
+    "volume_diff.py",
+    ["--extract", filePath, "--max_extract_points", String(maxPoints)]
+  );
+  return { points: parsed.points || [], colors: parsed.colors };
 }
