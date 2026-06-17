@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import numpy as np
-from typing import Tuple
 
 
 def _load_point_cloud(path: str):
@@ -118,26 +117,6 @@ def _load_point_cloud(path: str):
         f"Path received by job: {path!r}. "
         f"If ext is empty, your backend likely saved the upload without the original suffix."
     )
-
-
-def _estimate_volume_voxels(pcd, voxel_size: float, max_points: int) -> Tuple[float, int]:
-    import numpy as np
-    import open3d as o3d
-
-    pts = np.asarray(pcd.points)
-    if pts.size == 0:
-        return 0.0, 0
-
-    if max_points > 0 and len(pts) > max_points:
-        idx = np.random.choice(len(pts), size=max_points, replace=False)
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(pts[idx])
-
-    vg = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
-    voxels = vg.get_voxels()
-    count = len(voxels)
-    volume = count * (voxel_size ** 3)
-    return float(volume), int(count)
 
 
 def extract_points(path: str, max_points: int = 100000):
@@ -256,38 +235,14 @@ def extract_points(path: str, max_points: int = 100000):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--t1", required=False)
-    ap.add_argument("--t2", required=False)
-    ap.add_argument("--extract", required=False)  # New mode for single file extraction
-    ap.add_argument("--voxel", type=float, default=0.05)  # 5cm default
-    ap.add_argument("--max_points", type=int, default=2_000_000)
-    ap.add_argument("--max_extract_points", type=int, default=300_000)  # For extraction mode
+    ap.add_argument("--extract", required=True, help="Path to a point cloud file to extract for 3D visualisation")
+    ap.add_argument("--max_extract_points", type=int, default=300_000)
     args = ap.parse_args()
 
     try:
-        if args.extract:
-            # Single file extraction mode
-            result = extract_points(args.extract, args.max_extract_points)
-            print(json.dumps(result))
-            return 0
-        elif args.t1 and args.t2:
-            # Volume comparison mode
-            pcd1 = _load_point_cloud(args.t1)
-            pcd2 = _load_point_cloud(args.t2)
-            v1, c1 = _estimate_volume_voxels(pcd1, args.voxel, args.max_points)
-            v2, c2 = _estimate_volume_voxels(pcd2, args.voxel, args.max_points)
-            out = {
-                "volumeT1M3": v1,
-                "volumeT2M3": v2,
-                "volumeChangeM3": v2 - v1,
-                "voxelSizeM": args.voxel,
-                "voxelCountT1": c1,
-                "voxelCountT2": c2,
-            }
-            print(json.dumps(out))
-            return 0
-        else:
-            raise RuntimeError("Must specify either --extract for single file or --t1 and --t2 for comparison")
+        result = extract_points(args.extract, args.max_extract_points)
+        print(json.dumps(result))
+        return 0
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         return 2

@@ -1,9 +1,15 @@
+import path from "path";
+import fs from "fs";
 import { Router } from "express";
 import { authenticateToken } from "../middleware/auth.js";
 import { RunModel, ScanModel, ZoneModel } from "../models.js";
 import { publish } from "../realtime.js";
-import { runPythonVolumeDiff } from "../services/python.js";
-import { calcOverallProgress, getLeafZones, pickConfidence, forecastDateISO } from "../utils/calculations.js";
+import { runPythonPreprocess, runPythonChangeDetect } from "../services/python.js";
+import { calcOverallProgress, getLeafZones, forecastDateISO } from "../utils/calculations.js";
+
+// Intermediate PLY files produced during a run are stored here.
+const RUNS_DIR = path.resolve(process.cwd(), "uploads", "runs");
+fs.mkdirSync(RUNS_DIR, { recursive: true });
 
 export const router = Router();
 
@@ -67,36 +73,66 @@ router.post("/", authenticateToken, async (req, res) => {
       const t2 = await ScanModel.findById(t2ScanId).lean();
       if (!t1 || !t2) throw new Error("Missing scan files");
 
-      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 20 });
-      const volumes = await runPythonVolumeDiff(t1.filePath, t2.filePath, voxelSize);
+      // ── Step 1: Align T2 onto T1's coordinate frame (FPFH-RANSAC → Point-to-Plane ICP) ──
+      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 10 });
+      const alignedT2Path = path.join(RUNS_DIR, `${runId}_aligned_t2.ply`);
+      const preprocess = await runPythonPreprocess(t1.filePath, t2.filePath, alignedT2Path, { voxelSize });
 
-      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 75 });
+      // ── Step 2: Bidirectional change detection on the now-aligned clouds ──
+      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 55 });
+      const outAddedPath   = path.join(RUNS_DIR, `${runId}_added.ply`);
+      const outRemovedPath = path.join(RUNS_DIR, `${runId}_removed.ply`);
+      const changes = await runPythonChangeDetect(
+        t1.filePath,
+        preprocess.alignedT2Path,
+        outAddedPath,
+        outRemovedPath,
+        { voxelSize },
+      );
 
-      const overallProgressPct = calcOverallProgress(volumes.volumeT1M3, volumes.volumeT2M3);
+      // ── Step 3: Bridge change-detector output → legacy RunDoc flat metrics ──
+      //
+      // added.volumeM3   = volume of material newly placed in T2 (construction work)
+      // removed.volumeM3 = volume of material present in T1 but absent in T2 (demolition)
+      //
+      // volumeT1M3 is set to the total change magnitude (added + removed) so that
+      // calcOverallProgress produces:
+      //   overallProgressPct = (added − removed) / (added + removed) × 100
+      // which expresses what fraction of all volumetric activity is net-positive construction.
+      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 85 });
+
+      const addedVol       = changes.added.volumeM3;
+      const removedVol     = changes.removed.volumeM3;
+      const volumeChangeM3 = addedVol - removedVol;
+      const volumeT1M3     = addedVol + removedVol;          // total change magnitude
+      const volumeT2M3     = volumeT1M3 + volumeChangeM3;   // = 2 × addedVol
+      const overallProgressPct = calcOverallProgress(volumeT1M3, volumeT2M3);
+
       const leafZones = await getLeafZones(projectId);
-
       const perZoneProgress = leafZones.map((z, i) => {
         const w = leafZones.length <= 1 ? 1 : (i + 1) / leafZones.length;
         const p = Math.max(0, Math.min(100, overallProgressPct * (0.7 + 0.6 * w)));
         return {
           zoneId: String(z._id),
           progressPct: Math.round(p * 10) / 10,
-          volumeChangeM3: volumes.volumeChangeM3 / Math.max(1, leafZones.length),
+          volumeChangeM3: volumeChangeM3 / Math.max(1, leafZones.length),
         };
       });
 
       const root = await ZoneModel.findOne({ projectId, type: "site" }).lean();
       if (root) await ZoneModel.findByIdAndUpdate(String(root._id), { completionPct: overallProgressPct });
 
-      const conf = pickConfidence(volumes.volumeChangeM3);
+      // alignmentConfidence comes directly from ICP fitness/RMSE metrics — far more
+      // accurate than the old heuristic that guessed from volume magnitude.
+      const conf = preprocess.alignmentConfidence.toLowerCase() as "high" | "medium" | "low";
       const forecastCompletionISO = forecastDateISO(overallProgressPct);
 
       await RunModel.findByIdAndUpdate(runId, {
         status: "done",
         alignmentConfidence: conf,
-        volumeT1M3: volumes.volumeT1M3,
-        volumeT2M3: volumes.volumeT2M3,
-        volumeChangeM3: volumes.volumeChangeM3,
+        volumeT1M3,
+        volumeT2M3,
+        volumeChangeM3,
         overallProgressPct,
         forecastCompletionISO,
         metricsByZone: perZoneProgress,

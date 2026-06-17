@@ -625,7 +625,7 @@ def main() -> int:
             eps=args.eps,
             min_pts=args.min_pts,
         )
-        print(json.dumps(result))
+        print(json.dumps(result), flush=True)
         return 0
 
     except Exception as exc:
@@ -636,33 +636,31 @@ def main() -> int:
 
 def _hard_exit(code: int) -> None:
     """
-    Flush the JSON channel, tear down the joblib/loky worker pool, then exit now.
+    Flush stdout, then hard-exit so the main process terminates immediately.
 
-    Why this exists
-    ---------------
-    DBSCAN(n_jobs=-1) spins up a joblib/loky pool of worker SUBPROCESSES. Those
-    workers inherit this process's stdout/stderr pipe file descriptors, and loky
-    keeps the pool idle-alive (~300 s) for reuse. While a worker lives it holds
-    the pipe write-end open, so the Node parent's child 'close' event never fires
-    and the HTTP request hangs ("socket hang up") even though our work is done and
-    the JSON is already on stdout.
+    Why not executor.shutdown(wait=True)
+    -------------------------------------
+    The previous implementation called executor.shutdown(wait=True) here to try
+    to tear down the joblib/loky worker pool before exiting. On Windows this call
+    blocks indefinitely in some loky/joblib versions — the try/except only catches
+    exceptions, not an infinite block — so os._exit() was never reached, the Node
+    'exit' event never fired, and the run hung until the 20-minute timeout.
 
-    We therefore (1) flush stdout, (2) shut the pool down so no worker outlives
-    us, and (3) os._exit() to skip the slow/occasionally-hanging library atexit
-    handlers (Open3D, OpenMP, loky) — guaranteeing the process terminates the
-    instant the result is emitted.
+    The correct approach: os._exit() terminates the main process immediately.
+    Loky workers become short-lived orphans (~300 s loky idle timeout), but
+    Node.js already handles this correctly:
+      • It settles the Promise on the main process 'exit' event, not 'close'.
+      • cleanup() then destroys its pipe read handles, so orphan worker
+        write-ends cannot pin the Node event loop.
+
+    Why os._exit() and not sys.exit()
+    ----------------------------------
+    sys.exit() runs atexit handlers and destructor chains (Open3D, OpenMP, loky)
+    which can stall for seconds. os._exit() bypasses all of that and terminates
+    the process immediately — safe here because the JSON is already flushed.
     """
     try:
         sys.stdout.flush()
-    except Exception:
-        pass
-    try:
-        from joblib.externals.loky import get_reusable_executor
-        executor = get_reusable_executor()
-        try:
-            executor.shutdown(wait=True, kill_workers=True)
-        except TypeError:  # older loky without kill_workers
-            executor.shutdown(wait=True)
     except Exception:
         pass
     os._exit(code)

@@ -172,19 +172,6 @@ export async function runPythonStandardize(
   ]);
 }
 
-export async function runPythonVolumeDiff(t1Path: string, t2Path: string, voxelSize: number) {
-  const parsed = await runPython<Record<string, unknown>>("volume_diff", "volume_diff.py", [
-    "--t1", t1Path,
-    "--t2", t2Path,
-    "--voxel", String(voxelSize),
-  ]);
-  return {
-    volumeT1M3: Number(parsed.volumeT1M3 || 0),
-    volumeT2M3: Number(parsed.volumeT2M3 || 0),
-    volumeChangeM3: Number(parsed.volumeChangeM3 || 0),
-  };
-}
-
 export interface PreprocessResult {
   fitness: number;
   rmseM: number;
