@@ -4,8 +4,8 @@ import { Router } from "express";
 import { authenticateToken } from "../middleware/auth.js";
 import { RunModel, ScanModel, ZoneModel } from "../models.js";
 import { publish } from "../realtime.js";
-import { runPythonPreprocess, runPythonChangeDetect } from "../services/python.js";
-import { calcOverallProgress, getLeafZones, forecastDateISO } from "../utils/calculations.js";
+import { runPythonPreprocess, runPythonChangeDetect, runPythonVolumeOne } from "../services/python.js";
+import { calcProgressFromDelta, getLeafZones, forecastDateISO } from "../utils/calculations.js";
 
 // Intermediate PLY files produced during a run are stored here.
 const RUNS_DIR = path.resolve(process.cwd(), "uploads", "runs");
@@ -32,18 +32,36 @@ router.get("/", authenticateToken, async (req, res) => {
       overallProgressPct: r.overallProgressPct,
       forecastCompletionISO: r.forecastCompletionISO,
       metricsByZone: r.metricsByZone,
+      // New fields from the full pipeline
+      fitness: r.fitness,
+      rmseCm: r.rmseCm,
+      addedVolumeM3: r.addedVolumeM3,
+      removedVolumeM3: r.removedVolumeM3,
+      addedElementCount: r.addedElementCount,
+      removedElementCount: r.removedElementCount,
     }))
   );
 });
 
 router.post("/", authenticateToken, async (req, res) => {
   const projectId = String(req.body?.projectId || "");
-  const t1ScanId = String(req.body?.t1ScanId || "");
-  const t2ScanId = String(req.body?.t2ScanId || "");
+  const t1ScanId  = String(req.body?.t1ScanId || "");
+  const t2ScanId  = String(req.body?.t2ScanId || "");
   const voxelSize = Number(req.body?.voxelSize || 0.05);
 
   if (!t1ScanId || !t2ScanId) return res.status(400).json({ error: "t1ScanId and t2ScanId are required" });
-  if (t1ScanId === t2ScanId) return res.status(400).json({ error: "t1 and t2 must be different scans" });
+  if (t1ScanId === t2ScanId)  return res.status(400).json({ error: "t1 and t2 must be different scans" });
+
+  // Reject a new run while one is already in flight for this project — prevents
+  // two Python pipelines writing to the same uploads/runs/<runId> paths and DB
+  // fields concurrently (e.g. user double-clicks, or refreshes and retries).
+  const activeRun = await RunModel.findOne({
+    projectId,
+    status: { $in: ["queued", "processing"] },
+  }).lean();
+  if (activeRun) {
+    return res.status(409).json({ error: "A comparison is already running for this project" });
+  }
 
   const created = await RunModel.create({
     projectId,
@@ -63,7 +81,8 @@ router.post("/", authenticateToken, async (req, res) => {
   const runId = String(created._id);
   publish(projectId, { type: "run.created", runId, status: "queued" });
 
-  // Fire-and-forget async processing
+  // Fire-and-forget: the three Python steps run sequentially in the background.
+  // Each step writes progress events so the UI can show a live indicator.
   (async () => {
     try {
       await RunModel.findByIdAndUpdate(runId, { status: "processing" });
@@ -71,42 +90,80 @@ router.post("/", authenticateToken, async (req, res) => {
 
       const t1 = await ScanModel.findById(t1ScanId).lean();
       const t2 = await ScanModel.findById(t2ScanId).lean();
-      if (!t1 || !t2) throw new Error("Missing scan files");
+      if (!t1 || !t2) throw new Error("Missing scan records in database");
+      if (!fs.existsSync(t1.filePath)) throw new Error(`T1 file not found on disk: ${t1.filePath}`);
+      if (!fs.existsSync(t2.filePath)) throw new Error(`T2 file not found on disk: ${t2.filePath}`);
 
-      // ── Step 1: Align T2 onto T1's coordinate frame (FPFH-RANSAC → Point-to-Plane ICP) ──
-      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 10 });
-      const alignedT2Path = path.join(RUNS_DIR, `${runId}_aligned_t2.ply`);
-      const preprocess = await runPythonPreprocess(t1.filePath, t2.filePath, alignedT2Path, { voxelSize });
+      // ── Step 1: Measure T1 baseline volume ────────────────────────────────
+      // Runs volume_diff.py --single on T1 to get the total occupied volume
+      // before any construction.  This becomes the denominator for progress %:
+      //   overallProgressPct = addedVolumeM3 / volumeT1M3 × 100
+      // A fixed seed inside the Python script ensures the same file always
+      // produces the same voxel count, so progress is deterministic.
+      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 8 });
+      const { volumeM3: volumeT1M3 } = await runPythonVolumeOne(t1.filePath, voxelSize);
 
-      // ── Step 2: Bidirectional change detection on the now-aligned clouds ──
+      // ── Step 2: Preprocess ─────────────────────────────────────────────────
+      // Denoises both clouds (Statistical Outlier Removal), aligns T2 onto T1's
+      // coordinate frame via FPFH-RANSAC global registration + Point-to-Plane ICP,
+      // and writes two PLY files to disk:
+      //   • out_t1 — SOR-cleaned T1 in its original frame (required by change_detector)
+      //   • out_t2 — SOR-cleaned T2 transformed into T1's frame
+      // Returns ICP fitness/RMSE so we can report alignment quality.
+      publish(projectId, { type: "run.progress", runId, status: "processing", pct: 15 });
+      const cleanedT1Path  = path.join(RUNS_DIR, `${runId}_t1_cleaned.ply`);
+      const alignedT2Path  = path.join(RUNS_DIR, `${runId}_t2_aligned.ply`);
+      const preprocessResult = await runPythonPreprocess(
+        t1.filePath,
+        t2.filePath,
+        alignedT2Path,
+        cleanedT1Path,
+        { voxelSize },
+      );
+
+      // ── Step 2: Change detection ───────────────────────────────────────────
+      // Builds KD-Trees on the aligned clouds and finds:
+      //   • ADDED points — in T2 but not in T1 (new construction)
+      //   • REMOVED points — in T1 but not in T2 (demolition / scan gap)
+      // Each set is DBSCAN-clustered into discrete structural elements and
+      // volume-measured with both voxel and OBB methods.
+      // Both inputs MUST be PLY — preprocessResult supplies exactly that.
       publish(projectId, { type: "run.progress", runId, status: "processing", pct: 55 });
       const outAddedPath   = path.join(RUNS_DIR, `${runId}_added.ply`);
       const outRemovedPath = path.join(RUNS_DIR, `${runId}_removed.ply`);
+
+      // Use cleanedT1Path returned by Python (falls back to the path we passed).
+      const t1PlyPath = preprocessResult.cleanedT1Path ?? cleanedT1Path;
+
       const changes = await runPythonChangeDetect(
-        t1.filePath,
-        preprocess.alignedT2Path,
+        t1PlyPath,
+        preprocessResult.alignedT2Path,
         outAddedPath,
         outRemovedPath,
         { voxelSize },
       );
 
-      // ── Step 3: Bridge change-detector output → legacy RunDoc flat metrics ──
+      // ── Step 3: Aggregate metrics ──────────────────────────────────────────
+      // addedVolumeM3   = total volume of newly placed material
+      // removedVolumeM3 = total volume of material that disappeared
+      // volumeChangeM3  = net change (positive = more was built than removed)
       //
-      // added.volumeM3   = volume of material newly placed in T2 (construction work)
-      // removed.volumeM3 = volume of material present in T1 but absent in T2 (demolition)
-      //
-      // volumeT1M3 is set to the total change magnitude (added + removed) so that
-      // calcOverallProgress produces:
-      //   overallProgressPct = (added − removed) / (added + removed) × 100
-      // which expresses what fraction of all volumetric activity is net-positive construction.
+      // For the legacy volumeT1M3/volumeT2M3 fields (used by dashboard/reports):
+      //   volumeT1M3 = addedVol + removedVol  (total activity magnitude)
+      //   volumeT2M3 = addedVol + addedVol    (so delta / T1 = addedFraction)
+      // This lets calcOverallProgress return a meaningful 0–100 % value even
+      // without running the slower volume_diff.py scan.
       publish(projectId, { type: "run.progress", runId, status: "processing", pct: 85 });
 
-      const addedVol       = changes.added.volumeM3;
-      const removedVol     = changes.removed.volumeM3;
-      const volumeChangeM3 = addedVol - removedVol;
-      const volumeT1M3     = addedVol + removedVol;          // total change magnitude
-      const volumeT2M3     = volumeT1M3 + volumeChangeM3;   // = 2 × addedVol
-      const overallProgressPct = calcOverallProgress(volumeT1M3, volumeT2M3);
+      const addedVolumeM3   = changes.added.volumeM3;
+      const removedVolumeM3 = changes.removed.volumeM3;
+      const volumeChangeM3  = addedVolumeM3 - removedVolumeM3;
+      // volumeT2M3 ≈ T1 baseline + net change (used for dashboard/reports legacy fields)
+      const volumeT2M3 = Math.max(0, volumeT1M3 + volumeChangeM3);
+
+      // overallProgressPct = how much new material was added relative to
+      // what existed at T1.  E.g. if T1 is 100 m³ and 20 m³ was added → 20%.
+      const overallProgressPct = calcProgressFromDelta(addedVolumeM3, volumeT1M3);
 
       const leafZones = await getLeafZones(projectId);
       const perZoneProgress = leafZones.map((z, i) => {
@@ -122,10 +179,8 @@ router.post("/", authenticateToken, async (req, res) => {
       const root = await ZoneModel.findOne({ projectId, type: "site" }).lean();
       if (root) await ZoneModel.findByIdAndUpdate(String(root._id), { completionPct: overallProgressPct });
 
-      // alignmentConfidence comes directly from ICP fitness/RMSE metrics — far more
-      // accurate than the old heuristic that guessed from volume magnitude.
-      const conf = preprocess.alignmentConfidence.toLowerCase() as "high" | "medium" | "low";
-      const forecastCompletionISO = forecastDateISO(overallProgressPct);
+      // alignmentConfidence comes directly from ICP fitness/RMSE — no guessing.
+      const conf = preprocessResult.alignmentConfidence.toLowerCase() as "high" | "medium" | "low";
 
       await RunModel.findByIdAndUpdate(runId, {
         status: "done",
@@ -134,8 +189,16 @@ router.post("/", authenticateToken, async (req, res) => {
         volumeT2M3,
         volumeChangeM3,
         overallProgressPct,
-        forecastCompletionISO,
+        forecastCompletionISO: forecastDateISO(overallProgressPct),
         metricsByZone: perZoneProgress,
+        // ICP quality metrics
+        fitness: preprocessResult.fitness,
+        rmseCm:  preprocessResult.rmseCm,
+        // Change detection summary
+        addedVolumeM3,
+        removedVolumeM3,
+        addedElementCount:   changes.added.elementCount,
+        removedElementCount: changes.removed.elementCount,
       });
 
       publish(projectId, { type: "run.done", runId, status: "done" });

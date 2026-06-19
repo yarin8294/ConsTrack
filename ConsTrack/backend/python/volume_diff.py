@@ -233,16 +233,49 @@ def extract_points(path: str, max_points: int = 100000):
     return result
 
 
+def estimate_volume_single(path: str, voxel_size: float) -> dict:
+    """
+    Compute the voxel-grid volume of a single point cloud file using all points.
+
+    All points are used — no downsampling — so the result is deterministic and
+    as accurate as the voxel resolution allows.
+    """
+    import open3d as o3d
+    pcd = _load_point_cloud(path)
+    pts = np.asarray(pcd.points)
+    if pts.size == 0:
+        return {"volumeM3": 0.0, "voxelCount": 0}
+
+    vg = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
+    count = len(vg.get_voxels())
+    volume = count * (voxel_size ** 3)
+    return {"volumeM3": float(volume), "voxelCount": int(count)}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--extract", required=True, help="Path to a point cloud file to extract for 3D visualisation")
+    # --single: compute the voxel-grid volume of one file (used by the pipeline
+    # to get the T1 baseline volume for progress % calculation)
+    ap.add_argument("--single",  required=False, default=None,
+                    help="Path to a point cloud file whose volume should be measured")
+    ap.add_argument("--voxel",   type=float, default=0.05)
+    # --extract: downsample a file for 3-D visualisation
+    ap.add_argument("--extract", required=False, default=None,
+                    help="Path to a point cloud file to extract for 3D visualisation")
     ap.add_argument("--max_extract_points", type=int, default=300_000)
     args = ap.parse_args()
 
     try:
-        result = extract_points(args.extract, args.max_extract_points)
-        print(json.dumps(result))
-        return 0
+        if args.single:
+            result = estimate_volume_single(args.single, args.voxel)
+            print(json.dumps(result))
+            return 0
+        elif args.extract:
+            result = extract_points(args.extract, args.max_extract_points)
+            print(json.dumps(result))
+            return 0
+        else:
+            raise RuntimeError("Specify --single <path> or --extract <path>")
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         return 2

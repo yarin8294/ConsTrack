@@ -152,6 +152,16 @@ function runPython<T = unknown>(
   });
 }
 
+export async function runPythonVolumeOne(
+  filePath: string,
+  voxelSize: number = 0.05
+): Promise<{ volumeM3: number; voxelCount: number }> {
+  return runPython("volume_one", "volume_diff.py", [
+    "--single", filePath,
+    "--voxel",  String(voxelSize),
+  ]);
+}
+
 export interface StandardizeResult {
   cleanedPlyPath: string;
   originalPointCount: number;
@@ -179,6 +189,7 @@ export interface PreprocessResult {
   alignmentConfidence: "HIGH" | "MEDIUM" | "LOW";
   transformMatrix: number[][];
   alignedT2Path: string;
+  cleanedT1Path?: string;
   elapsedS: number;
 }
 
@@ -186,9 +197,10 @@ export async function runPythonPreprocess(
   t1Path: string,
   t2Path: string,
   outT2Path: string,
+  outT1Path?: string,
   opts: { voxelSize?: number; sorK?: number; sorStd?: number; icpDist?: number } = {}
 ): Promise<PreprocessResult> {
-  return runPython<PreprocessResult>("preprocessor", "preprocessor.py", [
+  const args = [
     "--t1", t1Path,
     "--t2", t2Path,
     "--out_t2", outT2Path,
@@ -196,7 +208,9 @@ export async function runPythonPreprocess(
     "--sor_k", String(opts.sorK ?? 20),
     "--sor_std", String(opts.sorStd ?? 2.0),
     "--icp_dist", String(opts.icpDist ?? 0.10),
-  ]);
+  ];
+  if (outT1Path) args.push("--out_t1", outT1Path);
+  return runPython<PreprocessResult>("preprocessor", "preprocessor.py", args);
 }
 
 export interface ClusterInfo {

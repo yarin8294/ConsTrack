@@ -162,6 +162,12 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
           workRatePerDay: 0,
           deviationDays: 0,
         })),
+        fitness: r.fitness,
+        rmseCm: r.rmseCm,
+        addedVolumeM3: r.addedVolumeM3,
+        removedVolumeM3: r.removedVolumeM3,
+        addedElementCount: r.addedElementCount,
+        removedElementCount: r.removedElementCount,
       })) as ComparisonRun[],
     }));
 

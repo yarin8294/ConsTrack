@@ -125,6 +125,14 @@ export type RunDoc = {
   overallProgressPct: number;
   metricsByZone: AreaMetric[];
   forecastCompletionISO?: string;
+  // ICP alignment metrics
+  fitness?: number;
+  rmseCm?: number;
+  // Change detection results
+  addedVolumeM3?: number;
+  removedVolumeM3?: number;
+  addedElementCount?: number;
+  removedElementCount?: number;
 };
 
 const MetricSchema = new Schema<AreaMetric>(
@@ -151,6 +159,12 @@ const RunSchema = new Schema<RunDoc>(
     overallProgressPct: { type: Number, required: true, default: 0 },
     metricsByZone: { type: [MetricSchema], required: true, default: [] },
     forecastCompletionISO: { type: String, required: false },
+    fitness: { type: Number, required: false },
+    rmseCm: { type: Number, required: false },
+    addedVolumeM3: { type: Number, required: false },
+    removedVolumeM3: { type: Number, required: false },
+    addedElementCount: { type: Number, required: false },
+    removedElementCount: { type: Number, required: false },
   },
   { versionKey: false }
 );

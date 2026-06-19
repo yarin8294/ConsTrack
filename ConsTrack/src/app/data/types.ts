@@ -43,6 +43,13 @@ export type ComparisonRun = {
   volumeT2M3?: number;
   volumeChangeM3?: number;
   metricsByArea: AreaMetric[];
+  // Full pipeline results
+  fitness?: number;
+  rmseCm?: number;
+  addedVolumeM3?: number;
+  removedVolumeM3?: number;
+  addedElementCount?: number;
+  removedElementCount?: number;
 };
 
 export type AppData = {

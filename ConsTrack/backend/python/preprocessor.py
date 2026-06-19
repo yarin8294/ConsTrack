@@ -334,6 +334,7 @@ def preprocess(
     sor_std: float = 2.0,
     icp_dist: float = 0.10,
     icp_max_iter: int = 2000,
+    out_t1: str | None = None,
 ) -> dict:
     """
     Run the full pre-processing pipeline and return alignment metrics as a dict.
@@ -411,18 +412,29 @@ def preprocess(
     o3d.io.write_point_cloud(out_t2, pcd_t2_aligned, write_ascii=False, compressed=True)
     log.info("Aligned T2 written → %s", out_t2)
 
+    # Write cleaned T1 to disk (needed as PLY input for change_detector.py)
+    cleaned_t1_path: str | None = None
+    if out_t1:
+        os.makedirs(os.path.dirname(os.path.abspath(out_t1)), exist_ok=True)
+        o3d.io.write_point_cloud(out_t1, pcd_t1, write_ascii=False, compressed=True)
+        cleaned_t1_path = os.path.abspath(out_t1)
+        log.info("Cleaned T1 written → %s", cleaned_t1_path)
+
     elapsed = time.time() - t_start
     log.info("=== Pre-processing pipeline DONE (%.1f s) ===", elapsed)
 
-    return {
+    result = {
         "fitness": float(icp_result.fitness),
         "rmseM": float(icp_result.inlier_rmse),
         "rmseCm": round(float(icp_result.inlier_rmse) * 100, 3),
         "alignmentConfidence": _confidence_label(icp_result.fitness, icp_result.inlier_rmse),
-        "transformMatrix": fine_T.tolist(),   # 4×4 as nested list — JSON-serialisable
+        "transformMatrix": fine_T.tolist(),
         "alignedT2Path": os.path.abspath(out_t2),
         "elapsedS": round(elapsed, 2),
     }
+    if cleaned_t1_path:
+        result["cleanedT1Path"] = cleaned_t1_path
+    return result
 
 
 def _confidence_label(fitness: float, rmse_m: float) -> str:
@@ -452,6 +464,7 @@ def main() -> int:
     ap.add_argument("--t1",       required=True,              help="Path to T1 (reference) scan")
     ap.add_argument("--t2",       required=True,              help="Path to T2 (later) scan")
     ap.add_argument("--out_t2",   required=True,              help="Output path for aligned T2 .ply")
+    ap.add_argument("--out_t1",   required=False, default=None, help="Output path for SOR-cleaned T1 .ply (needed by change_detector)")
     ap.add_argument("--voxel",    type=float, default=0.05,   help="Voxel size in metres (default 0.05)")
     ap.add_argument("--sor_k",    type=int,   default=20,     help="SOR neighbour count (default 20)")
     ap.add_argument("--sor_std",  type=float, default=2.0,    help="SOR std-deviation ratio (default 2.0)")
@@ -463,6 +476,7 @@ def main() -> int:
             path_t1=args.t1,
             path_t2=args.t2,
             out_t2=args.out_t2,
+            out_t1=args.out_t1,
             voxel_size=args.voxel,
             sor_k=args.sor_k,
             sor_std=args.sor_std,

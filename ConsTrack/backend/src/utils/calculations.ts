@@ -1,10 +1,24 @@
 import { ZoneModel, type ZoneDoc } from "../models.js";
 
-export function pickConfidence(volumeChange: number): "high" | "medium" | "low" {
-  const mag = Math.abs(volumeChange);
-  if (mag < 1) return "high";
-  if (mag < 10) return "medium";
+// fitness is the ICP inlier ratio (0–1) returned by preprocessor.py.
+// Mirrors the thresholds in preprocessor.py::_confidence_label.
+export function pickConfidence(fitness: number): "high" | "medium" | "low" {
+  if (fitness >= 0.90) return "high";
+  if (fitness >= 0.70) return "medium";
   return "low";
+}
+
+// Progress as a percentage of how much new volume was added relative to T1 baseline.
+// Returns 0 when T1 volume is unknown or zero.
+export function calcProgressFromDelta(addedM3: number, t1VolumeM3: number): number {
+  if (t1VolumeM3 <= 0) return 0;
+  // Capped at 99 instead of 100: when T2 adds far more volume than T1 contains
+  // (e.g. comparing a corridor-only scan to one with a full room added), the raw
+  // ratio exceeds 100% — which is mathematically correct but misleading, since
+  // 100% implies the project is complete. True completion requires knowing the
+  // total planned volume, which the system doesn't have. 99 signals significant
+  // progress without falsely declaring the project done.
+  return Math.max(0, Math.min(99, (addedM3 / t1VolumeM3) * 100));
 }
 
 export function forecastDateISO(overallProgressPct: number): string {

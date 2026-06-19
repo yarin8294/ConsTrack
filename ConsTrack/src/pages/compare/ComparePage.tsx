@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { useAppData } from "../../app/data/useAppData";
+import { useRealtime } from "../../app/realtime/useRealtime";
 import { formatDate } from "../../app/format";
 
 function ConfidenceBadge({ v }: { v: string }) {
@@ -17,11 +18,38 @@ function ConfidenceBadge({ v }: { v: string }) {
 export function ComparePage() {
   const nav = useNavigate();
   const { data, runComparison } = useAppData();
+  const { subscribe } = useRealtime();
   const t1 = data.scans.find((s) => s.id === data.selectedT1);
   const t2 = data.scans.find((s) => s.id === data.selectedT2);
   const latest = data.runs[0];
 
   const canRun = !!t1 && !!t2 && t1.id !== t2.id;
+
+  // pct=null means no run in progress; pct=0..100 means actively running.
+  const [runPct, setRunPct] = useState<number | null>(null);
+
+  // Restore the "running" indicator after a page refresh: the backend run keeps
+  // going regardless of the browser, but the local runPct state above resets to
+  // null on reload. Without this, the button would look clickable again even
+  // though a run is still in flight (the server-side guard in runs.ts blocks a
+  // second run either way, but this keeps the UI honest about it).
+  useEffect(() => {
+    if (latest?.status === "processing" || latest?.status === "queued") {
+      setRunPct((prev) => (prev !== null ? prev : 0));
+    }
+  }, [latest?.status]);
+
+  useEffect(() => {
+    const unsubProgress = subscribe("run.progress", (msg) => {
+      setRunPct(msg.pct ?? 0);
+    });
+    const unsubDone = subscribe("run.done", () => {
+      // Hold at 100% briefly so the bar completes visually, then hide it.
+      setRunPct(100);
+      setTimeout(() => setRunPct(null), 1200);
+    });
+    return () => { unsubProgress(); unsubDone(); };
+  }, [subscribe]);
 
   const leafAreaCount = useMemo(() => data.areas.filter((a) => a.type === "zone").length, [data.areas]);
 
@@ -35,7 +63,7 @@ export function ComparePage() {
         <Button className="w-auto" variant="secondary" onClick={() => nav("/reports")}>Reports</Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <Card title="Inputs" subtitle="Select scans + areas">
           <div className="space-y-3 text-sm">
             <div>
@@ -64,15 +92,38 @@ export function ComparePage() {
           </div>
 
           <div className="mt-4">
-              <Button
-                disabled={!canRun}
-                onClick={() => {
-                  void runComparison().catch(() => void 0);
-                }}
-              >
-              Run comparison
+            <Button
+              disabled={!canRun || runPct !== null}
+              onClick={() => {
+                setRunPct(0);
+                void runComparison().catch(() => setRunPct(null));
+              }}
+            >
+              {runPct !== null ? "Running…" : "Run comparison"}
             </Button>
-            {!canRun && (
+
+            {runPct !== null && (
+              <div className="mt-3 space-y-1">
+                <div className="flex justify-between text-xs muted">
+                  <span>
+                    {runPct < 8  ? "Initialising…"
+                    : runPct < 15 ? "Measuring baseline volume…"
+                    : runPct < 55 ? "Aligning scans…"
+                    : runPct < 85 ? "Detecting changes…"
+                    : "Finalising…"}
+                  </span>
+                  <span>{runPct}%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-zinc-700 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-green-400 transition-all duration-500"
+                    style={{ width: `${runPct}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {!canRun && runPct === null && (
               <div className="mt-2 text-xs text-red-400">
                 Select two different scans (t₁ and t₂) first.
               </div>
@@ -95,7 +146,7 @@ export function ComparePage() {
               )}
               <div className="flex items-center justify-between">
                 <span className="muted">Overall progress</span>
-                <span className="font-semibold">{latest.overallProgressPct}%</span>
+                <span className="font-semibold">{latest.overallProgressPct.toFixed(2)}%</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="muted">Volume change</span>
@@ -111,6 +162,50 @@ export function ComparePage() {
               </div>
               <div className="pt-2">
                 <Button className="w-full" variant="secondary" onClick={() => nav("/reports")}>Open report</Button>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        <Card title="Analysis detail" subtitle={latest?.status === "done" ? "Full pipeline results" : "Run a comparison first"}>
+          {!latest || latest.status !== "done" ? (
+            <div className="text-sm muted">Results will appear here after a successful run.</div>
+          ) : (
+            <div className="space-y-3 text-sm">
+              <div className="text-xs font-semibold muted uppercase tracking-wide">Scan alignment</div>
+              <div className="flex items-center justify-between">
+                <span className="muted">Overlap quality</span>
+                <span className="font-semibold">
+                  {latest.fitness != null ? `${(latest.fitness * 100).toFixed(1)}%` : "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="muted">Alignment error</span>
+                <span className="font-semibold">
+                  {latest.rmseCm != null ? `${latest.rmseCm.toFixed(1)} cm` : "—"}
+                </span>
+              </div>
+
+              <div className="border-t border-app pt-3 text-xs font-semibold muted uppercase tracking-wide">Volume changes</div>
+              <div className="flex items-center justify-between">
+                <span className="muted">Added volume</span>
+                <span className="font-semibold text-emerald-400">
+                  +{(latest.addedVolumeM3 ?? 0).toFixed(3)} m³
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="muted">Removed volume</span>
+                <span className="font-semibold text-red-400">
+                  −{(latest.removedVolumeM3 ?? 0).toFixed(3)} m³
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="muted">New elements</span>
+                <span className="font-semibold">{latest.addedElementCount ?? "—"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="muted">Removed elements</span>
+                <span className="font-semibold">{latest.removedElementCount ?? "—"}</span>
               </div>
             </div>
           )}
