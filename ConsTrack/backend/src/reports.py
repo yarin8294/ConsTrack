@@ -43,27 +43,17 @@ def rl_color(hex_value):
 
 W, H = A4
 
-# משתני ברירת מחדל (גלובליים) שיעודכנו בזמן אמת מה-JSON
-RUN_ID        = '665f1c2d3e4f5a6b7c8d9e0f'
-GENERATED     = '2026-06-05T11:22:22.283Z'
-T1_SCAN       = 'scan_early_2026'
-T2_SCAN       = 'scan_later_2026'
-OVERALL_PCT   = 65.5
-VOL_T1        = 120.450
-VOL_T2        = 150.150
-VOL_DELTA     = +30.300
-FORECAST      = '2026-09-15'
-ALIGNMENT     = 'HIGH'
-
+# משתנים גלובליים שיאותחלו ב-main
 ZONES = []
-TIMELINE = {
-    'weeks': ['W1','W2','W3','W4','W5','W6','W7','W8'],
-    'actual':   [5.2, 6.8, 7.1, 8.4, 9.0, 10.2, 11.5, 12.3],
-    'planned':  [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0],
-    'cumActual':[5.2,12.0,19.1,27.5,36.5,46.7,58.2,65.5],
-    'cumPlan':  [6.0,13.0,21.0,30.0,40.0,51.0,63.0,76.0],
-}
-HEATMAP = None
+RUN_ID = ""
+GENERATED = ""
+T1_SCAN = ""
+T2_SCAN = ""
+OVERALL_PCT = 0.0
+VOL_T1 = 0.0
+VOL_T2 = 0.0
+VOL_DELTA = 0.0
+FORECAST = ""
 
 def fig_to_image(fig, dpi=150):
     buf = io.BytesIO()
@@ -71,6 +61,10 @@ def fig_to_image(fig, dpi=150):
     buf.seek(0)
     plt.close(fig)
     return buf
+
+
+
+
 
 def mpl_style():
     plt.rcParams.update({
@@ -88,39 +82,29 @@ def mpl_style():
         'axes.spines.right': False,
     })
 
-def chart_cumulative():
+# גרף חדש ואמיתי: מעקב נפח בין סריקות T1 ל-T2
+def chart_volume_trend():
     mpl_style()
     fig, ax = plt.subplots(figsize=(7, 3.2))
-    weeks = TIMELINE['weeks']
-    x = np.arange(len(weeks))
-    ax.fill_between(x, TIMELINE['cumPlan'], alpha=0.15, color='#1B3A5C')
-    ax.fill_between(x, TIMELINE['cumActual'], alpha=0.25, color='#00C6A7')
-    ax.plot(x, TIMELINE['cumPlan'], '--', color='#F4A261', linewidth=2, label='Planned', marker='o', markersize=5)
-    ax.plot(x, TIMELINE['cumActual'], '-', color='#00C6A7', linewidth=2.5, label='Actual', marker='o', markersize=6)
-    ax.set_xticks(x)
-    ax.set_xticklabels(weeks, fontsize=9)
-    ax.set_ylabel('Cumulative Progress (%)', fontsize=9)
-    ax.set_ylim(0, 100)
-    ax.legend(loc='upper left', fontsize=9, framealpha=0.8)
-    ax.set_title('Cumulative Progress vs. Planned Schedule', fontsize=11, fontweight='bold', color='#0D1B2A', pad=10)
-    fig.tight_layout()
-    return fig_to_image(fig)
-
-def chart_workrate():
-    mpl_style()
-    fig, ax = plt.subplots(figsize=(7, 3.0))
-    weeks = TIMELINE['weeks']
-    x = np.arange(len(weeks))
-    w = 0.35
-    ax.bar(x - w/2, TIMELINE['planned'], w, label='Planned', color='#1B3A5C', alpha=0.7, zorder=3)
-    bars_act = ax.bar(x + w/2, TIMELINE['actual'],  w, label='Actual',  color='#00C6A7', alpha=0.85, zorder=3)
-    for bar in bars_act:
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.2, f'{bar.get_height():.1f}', ha='center', va='bottom', fontsize=7.5, color='#0D1B2A')
-    ax.set_xticks(x)
-    ax.set_xticklabels(weeks, fontsize=9)
-    ax.set_ylabel('Weekly Progress (%)', fontsize=9)
-    ax.legend(fontsize=9)
-    ax.set_title('Weekly Work Rate - Planned vs. Actual', fontsize=11, fontweight='bold', color='#0D1B2A', pad=10)
+    
+    scans = [f"T1 Scan\n({T1_SCAN})", f"T2 Scan\n({T2_SCAN})"]
+    volumes = [VOL_T1, VOL_T2]
+    
+    # ציור קו המגמה בין הנקודות האמיתיות
+    ax.plot(scans, volumes, '-', color='#00C6A7', linewidth=3, marker='o', markersize=8, label='Measured Volume')
+    ax.fill_between(scans, volumes, alpha=0.15, color='#00C6A7')
+    
+    # הוספת ערכי הנפח מעל הנקודות
+    for i, vol in enumerate(volumes):
+        ax.text(i, vol + (max(volumes) * 0.02), f"{vol:.3f} m³", ha='center', va='bottom', fontweight='bold', color='#0D1B2A', fontsize=10)
+        
+    ax.set_ylabel('Volume (m³)', fontsize=10)
+    ax.set_title('Volume Change Trend (T1 to T2)', fontsize=12, fontweight='bold', color='#0D1B2A', pad=12)
+    
+    # התאמת גבולות ה-Y שיראה פרופורציונלי
+    margin = max(max(volumes) * 0.1, 1.0)
+    ax.set_ylim(max(0, min(volumes) - margin), max(volumes) + margin)
+    
     fig.tight_layout()
     return fig_to_image(fig)
 
@@ -175,7 +159,7 @@ class SectionHeader(Flowable):
         c.setFont('Helvetica-Bold', 12)
         c.drawString(16, 9, f'{self.number}.  {self.title}')
 
-# פונקציית ייצור ה-PDF המקורית שלך - כעת מקבלת את נתיב היעד הדינמי מהשרת
+
 def build_pdf(target_pdf_path):
     doc = SimpleDocTemplate(target_pdf_path, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=14*mm, bottomMargin=14*mm)
     
@@ -213,7 +197,7 @@ def build_pdf(target_pdf_path):
     story.append(CoverBanner())
     story.append(Spacer(1, 10))
 
-    meta_rows = [['Run ID', RUN_ID], ['T1 Scan', T1_SCAN], ['T2 Scan', T2_SCAN], ['Forecast', FORECAST]]
+    meta_rows = [['Run ID', RUN_ID], ['T1 Scan Date', T1_SCAN], ['T2 Scan Date', T2_SCAN], ['Forecast', FORECAST]]
     meta_table_data = [[Paragraph(k, kv_key), Paragraph(v, kv_val)] for k, v in meta_rows]
     meta_tbl = Table(meta_table_data, colWidths=[content_width*0.28, content_width*0.72])
     meta_tbl.setStyle(TableStyle([
@@ -285,7 +269,6 @@ def build_pdf(target_pdf_path):
         [Paragraph('Initial Volume - T1 Scan', body), Paragraph(f'{VOL_T1:.3f} m3', body)],
         [Paragraph('Current Volume - T2 Scan', body), Paragraph(f'{VOL_T2:.3f} m3', body)],
         [Paragraph('Net Volume Change (DeltaV)', body), Paragraph(f'<font color="#E63946"><b>{VOL_DELTA:.3f} m3</b></font>', body)],
-        [Paragraph('Alignment Confidence', body), Paragraph(f'<font color="#00C6A7"><b>{ALIGNMENT}</b></font>', body)],
     ]
     vol_tbl = Table(vol_data, colWidths=[content_width*0.55, content_width*0.45])
     vol_tbl.setStyle(TableStyle([
@@ -297,32 +280,38 @@ def build_pdf(target_pdf_path):
         ('LEFTPADDING', (0,0), (-1,-1), 8),
     ]))
     story.append(vol_tbl)
-    story.append(Spacer(1, 10))
-
-    story.append(SectionHeader('3', 'Forecast Completion Estimation', content_width))
-    story.append(Spacer(1, 8))
-    gap = TIMELINE['cumPlan'][-1] - TIMELINE['cumActual'][-1]
-    forecast_text = (f'Based on current site velocity and the observed work rate of <b>{TIMELINE["actual"][-1]:.1f}% per week</b>, the project is estimated to reach full completion on <font color="#F4A261"><b>{FORECAST}</b></font>. The current trajectory shows a <b>{gap:.1f}% gap</b> vs. the planned schedule.')
-    story.append(Paragraph(forecast_text, body))
     story.append(Spacer(1, 14))
 
-    story.append(SectionHeader('4', 'Work Rate Trends', content_width))
+    story.append(SectionHeader('3', 'Volume Analysis Graph', content_width))
     story.append(Spacer(1, 8))
-    buf_cum  = chart_cumulative()
-    buf_rate = chart_workrate()
-    story.append(Image(buf_cum,  width=content_width, height=content_width * 0.46))
+    
+    # הזרקת הגרף החדש המבוסס על הנקודות האמיתיות
+    buf_trend = chart_volume_trend()
+    story.append(Image(buf_trend, width=content_width, height=content_width * 0.46))
+    story.append(Spacer(1, 10))
+
+    story.append(SectionHeader('4', 'Forecast Completion Estimation', content_width))
     story.append(Spacer(1, 8))
-    story.append(Image(buf_rate, width=content_width, height=content_width * 0.43))
+
+    
+    
+
+
+    forecast_text = (f'Based on current site velocity and cross-scan comparative comparison, '
+                     f'the total registered change in site material is <b>{VOL_DELTA:+.3f} m³</b>. '
+                     f'The project trajectory is monitored dynamically with target forecast completion estimated for '
+                     f'<font color="#F4A261"><b>{FORECAST}</b></font>.')
+    story.append(Paragraph(forecast_text, body))
 
     story.append(Spacer(1, 16))
     story.append(HRFlowable(width=content_width, thickness=1, color=rl_color(ACCENT_HEX), spaceAfter=6))
     story.append(Paragraph(f'CONSTRACK Automated Report  -  Run {RUN_ID[:16]}...  -  {GENERATED[:10]}  -  Confidential.',
-        ParagraphStyle('footer', fontName='Helvetica', fontSize=7.5, textColor=rl_color(MID_GRAY), alignment=TA_CENTER)))
+        ParagraphStyle('footer', fontName='Helvetica', fontSize=7.5, textColor=rl_color(MID_GRAY))))
 
     doc.build(story)
 
-# פונקציות העיצוב של ה-Excel המקורי שלך
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+from openpyxl.styles import Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
 def style_cell(ws, row, col, value=None, bold=False, font_color="000000",
@@ -333,7 +322,6 @@ def style_cell(ws, row, col, value=None, bold=False, font_color="000000",
     cell.font = Font(name='Arial', bold=bold, color=font_color, size=size)
     if bg:
         cell.fill = PatternFill('solid', fgColor=bg)
-    cell.alignment = Alignment(horizontal=align, vertical='center', wrap_text=True)
     if border:
         thin = Side(style='thin', color='D0D8E4')
         cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -347,15 +335,8 @@ def merge_title(ws, row, col_start, col_end, text, bg=NAVY_HEX, fg=WHITE, sz=12)
     cell.value = text
     cell.font = Font(name='Arial', bold=True, color=fg, size=sz)
     cell.fill = PatternFill('solid', fgColor=bg)
-    cell.alignment = Alignment(horizontal='left', vertical='center')
 
 def build_excel(target_xlsx_path):
-    WEEKS   = list(TIMELINE['weeks'])
-    ACTUAL  = list(TIMELINE['actual'])
-    PLANNED = list(TIMELINE['planned'])
-    CUM_A   = list(TIMELINE['cumActual'])
-    CUM_P   = list(TIMELINE['cumPlan'])
-
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -373,19 +354,16 @@ def build_excel(target_xlsx_path):
     ws1['A1'].value = '  CONSTRACK — PROGRESS REPORT'
     ws1['A1'].font = Font(name='Arial', bold=True, color=ACCENT_HEX, size=22)
     ws1['A1'].fill = PatternFill('solid', fgColor=NAVY_HEX)
-    ws1['A1'].alignment = Alignment(horizontal='left', vertical='center')
 
     ws1.merge_cells('A3:F3')
-    ws1['A3'].value = f'  Generated: {GENERATED}   |   Run ID: {RUN_ID}   |   Alignment: {ALIGNMENT}   |   Forecast: {FORECAST}'
+    ws1['A3'].value = f'  Generated: {GENERATED}   |   Run ID: {RUN_ID}   |   Forecast: {FORECAST}'
     ws1['A3'].font = Font(name='Arial', color=MID_GRAY, size=9)
     ws1['A3'].fill = PatternFill('solid', fgColor="E8EEF4")
-    ws1['A3'].alignment = Alignment(horizontal='left', vertical='center')
 
     kpis = [
         ('Overall Progress', f'{OVERALL_PCT:.1f}%', ACCENT_HEX),
         ('Active Zones', str(len(ZONES)), STEEL_HEX),
         ('Est. Completion', FORECAST, ACCENT2),
-        ('Alignment', ALIGNMENT, GREEN_OK),
     ]
     for i, (label, value, color) in enumerate(kpis, start=3):
         col = i
@@ -394,7 +372,7 @@ def build_excel(target_xlsx_path):
         ws1.cell(row=6, column=col).border = Border(bottom=Side(style='medium', color=color))
 
     merge_title(ws1, 10, 1, 6, '  Run Metadata', bg=STEEL_HEX)
-    meta = [('Run ID', RUN_ID), ('T1 Scan', T1_SCAN), ('T2 Scan', T2_SCAN), ('Alignment', ALIGNMENT), ('Forecast', FORECAST), ('Generated', GENERATED)]
+    meta = [('Run ID', RUN_ID), ('T1 Scan Date', T1_SCAN), ('T2 Scan Date', T2_SCAN), ('Forecast', FORECAST), ('Generated', GENERATED)]
     for i, (k, v) in enumerate(meta, start=11):
         style_cell(ws1, i, 1, value=k, bold=True, font_color=STEEL_HEX, bg=LIGHT_BG if i%2==0 else WHITE, size=9)
         style_cell(ws1, i, 2, value=v, bold=False, font_color=NAVY_HEX, bg=LIGHT_BG if i%2==0 else WHITE, size=9)
@@ -427,30 +405,12 @@ def build_excel(target_xlsx_path):
             style_cell(ws2, i, 4, value=z['progress']/100, bold=True, font_color=ACCENT_HEX, bg=bg, align='center', number_format='0.0%')
             style_cell(ws2, i, 5, value=z['vol'], font_color=RED_ZONE, bg=bg, align='center', number_format='#,##0.000')
 
-    ws3 = wb.create_sheet("Timeline")
-    ws3.sheet_view.showGridLines = False
-    for col, w in zip(['A','B','C','D','E'], [14,14,14,14,18]): ws3.column_dimensions[col].width = w
-    ws3.merge_cells('A1:E1')
-    ws3['A1'].value = '  TIMELINE TRACKING'
-    ws3['A1'].font = Font(name='Arial', bold=True, color=ACCENT_HEX, size=16)
-    ws3['A1'].fill = PatternFill('solid', fgColor=NAVY_HEX)
-
-    hdrs = ['Week', 'Planned %', 'Actual %', 'Cum. Planned', 'Cum. Actual']
-    for col, h in enumerate(hdrs, 1): style_cell(ws3, 4, col, value=h, bold=True, font_color=WHITE, bg=NAVY_HEX, align='center')
-    for i, (wk, pl, ac, cp, ca) in enumerate(zip(WEEKS, PLANNED, ACTUAL, CUM_P, CUM_A), start=5):
-        bg = LIGHT_BG if i%2==0 else WHITE
-        style_cell(ws3, i, 1, value=wk, bold=True, bg=bg, align='center')
-        style_cell(ws3, i, 2, value=pl/100, bg=bg, align='center', number_format='0.0%')
-        style_cell(ws3, i, 3, value=ac/100, bg=bg, align='center', number_format='0.0%', font_color=GREEN_OK if ac>=pl else RED_ZONE)
-        style_cell(ws3, i, 4, value=cp/100, bg=bg, align='center', number_format='0.0%')
-        style_cell(ws3, i, 5, value=ca/100, bg=bg, align='center', number_format='0.0%', font_color=ACCENT_HEX)
-
     ws1.freeze_panes = 'A4'
     ws1.sheet_properties.tabColor = ACCENT_HEX
     wb.save(target_xlsx_path)
 
 def main():
-    global RUN_ID, GENERATED, T1_SCAN, T2_SCAN, OVERALL_PCT, VOL_T1, VOL_T2, VOL_DELTA, FORECAST, ALIGNMENT, ZONES
+    global RUN_ID, GENERATED, T1_SCAN, T2_SCAN, OVERALL_PCT, VOL_T1, VOL_T2, VOL_DELTA, FORECAST, ZONES
 
     if len(sys.argv) < 2:
         print("[DEBUG Python ERROR] No arguments passed to script!", flush=True)
@@ -461,7 +421,6 @@ def main():
         input_data = json.loads(sys.argv[1])
         print("[DEBUG Python] JSON parsed successfully!", flush=True)
         
-        # 1. שליפת נתיבים ופרמטרים מתוך השרת
         out_dir = input_data["outDir"]
         pdf_path = input_data["pdfPath"]
         xlsx_path = input_data["xlsxPath"]
@@ -469,21 +428,22 @@ def main():
         run_obj = input_data.get("run", {})
         zones_list = input_data.get("zones", [])
 
-        # 2. מיפוי הנתונים האמיתיים מהדאטה-בייס למבנה הדוח שלך
-        RUN_ID = str(run_obj.get("_id", RUN_ID))
-        GENERATED = str(run_obj.get("createdAtISO", GENERATED))
-        T1_SCAN = str(run_obj.get("t1ScanId", T1_SCAN))
-        T2_SCAN = str(run_obj.get("t2ScanId", T2_SCAN))
-        OVERALL_PCT = float(run_obj.get("overallProgressPct", OVERALL_PCT))
-        VOL_T1 = float(run_obj.get("volumeT1M3", VOL_T1))
-        VOL_T2 = float(run_obj.get("volumeT2M3", VOL_T2))
-        VOL_DELTA = float(run_obj.get("volumeChangeM3", VOL_DELTA))
-        FORECAST = str(run_obj.get("forecastCompletionISO", FORECAST))[:10]  # שמירת תאריך נקי
-        ALIGNMENT = str(run_obj.get("alignmentConfidence", ALIGNMENT)).upper()
+        RUN_ID = str(run_obj.get("_id", "Unknown_Run"))
+        GENERATED = str(run_obj.get("createdAtISO", ""))
+        
+        # שמירת תאריך נקי (10 תווים ראשונים של ה-ISO String)
+        T1_SCAN = str(input_data.get("t1ScanDate", "Unknown_T1"))[:10] 
+        T2_SCAN = str(input_data.get("t2ScanDate", "Unknown_T2"))[:10] 
+        
+        print(f"[DEBUG Python Scans Match] Parsed values -> T1 Scan Date: '{T1_SCAN}' | T2 Scan Date: '{T2_SCAN}'", flush=True)
 
-        # מיפוי האזורים האמיתיים מהמערך
+        OVERALL_PCT = float(run_obj.get("overallProgressPct", 0.0))
+        VOL_T1 = float(run_obj.get("volumeT1M3", 0.0))
+        VOL_T2 = float(run_obj.get("volumeT2M3", 0.0))
+        VOL_DELTA = float(run_obj.get("volumeChangeM3", 0.0))
+        FORECAST = str(run_obj.get("forecastCompletionISO", ""))[:10]  
+
         ZONES = []
-        # בניית מפה קלה למציאת מטריקות לפי אזור
         metrics_by_zone = {m["zoneId"]: m for m in run_obj.get("metricsByZone", [])}
         
         for z in zones_list:
@@ -492,9 +452,9 @@ def main():
             ZONES.append({
                 'name': z.get("name", "Unknown Zone"),
                 'type': z.get("type", "site").capitalize(),
-                'completion': float(z.get("completionPct", 0)),
-                'progress': float(metric.get("progressPct", 0)),
-                'vol': float(metric.get("volumeChangeM3", 0))
+                'completion': float(z.get("completionPct", 0.0)),
+                'progress': float(metric.get("progressPct", 0.0)),
+                'vol': float(metric.get("volumeChangeM3", 0.0))
             })
 
         print(f"[DEBUG Python] Target PDF path: {pdf_path}", flush=True)
@@ -502,7 +462,6 @@ def main():
         
         os.makedirs(out_dir, exist_ok=True)
         
-        # 3. הפעלת מנגנוני הציור והשמירה המקוריים שלך לנתיבים של השרת
         print("[DEBUG Python] Generating PDF report...", flush=True)
         build_pdf(pdf_path)
         
@@ -515,8 +474,6 @@ def main():
     except Exception as e:
         print(f"[DEBUG Python ERROR] Exception occurred: {str(e)}", flush=True)
         sys.exit(1)
-
-        
 
 if __name__ == "__main__":
     main()

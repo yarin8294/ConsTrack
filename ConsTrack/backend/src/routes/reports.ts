@@ -1,7 +1,7 @@
 import path from "path";
 import { Router } from "express";
 import { authenticateToken } from "../middleware/auth.js";
-import { ProjectModel, RunModel, ZoneModel, ReportModel } from "../models.js";
+import { ProjectModel, RunModel, ZoneModel, ReportModel, ScanModel } from "../models.js";
 import { generateReportFiles } from "../reporting.js";
 
 const REPORTS_DIR = path.join(path.resolve(process.cwd()), "reports");
@@ -32,16 +32,25 @@ router.post("/", authenticateToken, async (req, res) => {
   if (!run) return res.status(404).json({ error: "run not found" });
   if (run.status !== "done") return res.status(400).json({ error: "run is not done yet" });
 
-  const [zones, project] = await Promise.all([
+  const [zones, project, scanT1, scanT2] = await Promise.all([
     ZoneModel.find({ projectId }).lean(),
     ProjectModel.findById(projectId).lean(),
+    ScanModel.findById(run.t1ScanId).lean(),
+    ScanModel.findById(run.t2ScanId).lean(),
   ]);
+
+  const t1Date = scanT1?.capturedAtISO || "Unknown T1 Date";
+  const t2Date = scanT2?.capturedAtISO || "Unknown T2 Date";
+
+  console.log(`[DEBUG Node.js Router] Fetched Scan Dates -> T1: ${t1Date} | T2: ${t2Date}`);
 
   const { pdfPath, xlsxPath } = await generateReportFiles({
     outDir: REPORTS_DIR,
     projectName: project?.name ?? projectId,
     run: run as any,
     zones: zones as any,
+    t1ScanDate: String(t1Date), 
+    t2ScanDate: String(t2Date), 
   });
 
   const rep = await ReportModel.create({

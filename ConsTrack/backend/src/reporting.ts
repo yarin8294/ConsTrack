@@ -14,8 +14,11 @@ export async function generateReportFiles(opts: {
   projectName: string;
   run: RunDoc;
   zones: ZoneDoc[];
+  t1ScanDate: string; 
+  t2ScanDate: string; 
 }): Promise<ReportPaths> {
   console.log("[DEBUG 1] Entering generateReportFiles...");
+  console.log(`[DEBUG 2.5] Forwarding to Python -> T1 Date: ${opts.t1ScanDate}, T2 Date: ${opts.t2ScanDate}`);
   
   fs.mkdirSync(opts.outDir, { recursive: true });
   const ts = Date.now();
@@ -31,7 +34,9 @@ export async function generateReportFiles(opts: {
     run: opts.run,
     zones: opts.zones,
     pdfPath,
-    xlsxPath
+    xlsxPath,
+    t1ScanDate: opts.t1ScanDate, 
+    t2ScanDate: opts.t2ScanDate  
   };
 
   // פתרון פשוט ונקי: מכיוון שאתה מריץ מתוך תיקיית backend, 
