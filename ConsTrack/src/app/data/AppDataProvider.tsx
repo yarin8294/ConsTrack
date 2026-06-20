@@ -6,6 +6,7 @@ import {
   createProject as apiCreateProject,
   updateProject as apiUpdateProject,
   deleteProject as apiDeleteProject,
+  deleteReport as apiDeleteReport,
   createReport,
   createRun,
   createZone,
@@ -52,6 +53,7 @@ type AppDataContextValue = {
   // Reports
   refreshReports: () => Promise<void>;
   generateReportForRun: (runId: string) => Promise<void>;
+  deleteReport: (reportId: string) => Promise<void>;
 
   // Chat
   sendChat: (prompt: string) => Promise<string>;
@@ -217,10 +219,17 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [activeProjectId]);
 
-  // Refresh data when the backend signals a run has changed
+  // Refresh data when the backend signals a run has changed; auto-generate a report on success.
   useEffect(() => {
     if (!activeProjectId) return;
-    const unsub1 = subscribe("run.done", () => loadAll(activeProjectId));
+    const unsub1 = subscribe("run.done", (msg: any) => {
+      void (async () => {
+        if (msg?.runId && msg?.status === "done") {
+          try { await createReport(activeProjectId, msg.runId); } catch { /* best-effort */ }
+        }
+        loadAll(activeProjectId);
+      })();
+    });
     const unsub2 = subscribe("run.created", () => loadAll(activeProjectId));
     return () => { unsub1(); unsub2(); };
   }, [activeProjectId, subscribe]);
@@ -395,6 +404,11 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       fetchWorkDiary: async () => {
         const projectId = getProjectId();
         return fetchWorkDiary(projectId);
+      },
+
+      deleteReport: async (reportId: string) => {
+        await apiDeleteReport(reportId);
+        await loadAll(getProjectId());
       },
     };
   }, [data, dataLoading, projectsLoading, error, dashboard, reports, activeProjectId, projects, setProjectId, createProjectFromCtx, refreshProjects]);

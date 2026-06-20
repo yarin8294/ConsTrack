@@ -228,6 +228,10 @@ export async function createReport(projectId: string, runId: string) {
   });
 }
 
+export async function deleteReport(id: string) {
+  return api(`/api/reports/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function chat(prompt: string) {
   return api<{ reply: string }>(`/api/chat`, {
     method: "POST",

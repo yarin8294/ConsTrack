@@ -615,7 +615,11 @@ def analyze_delta(
 
     labels = cluster_dbscan(pts, eps, min_pts)
     clusters = compute_cluster_volumes(pts, labels, voxel_size)
-    total_vol = sum(c["voxelVolumeM3"] for c in clusters)
+    # hullVolumeM3 = convex-hull of each cluster's surface points — this
+    # approximates the enclosed solid volume (e.g. the 2.5×1×2 box ≈ 5 m³).
+    # voxelVolumeM3 only counts surface-layer voxels (~area × voxel_size),
+    # which heavily underestimates solid objects scanned from one direction.
+    total_vol = sum(c["hullVolumeM3"] for c in clusters)
     n_noise = int((labels == -1).sum())
 
     export_colored_ply(pts, labels, out_path)

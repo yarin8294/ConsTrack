@@ -51,7 +51,8 @@ export async function generateReportFiles(opts: {
     console.log("[DEBUG 4] Executing Python process...");
     
     // הרצה נקייה ללא shell: true, מה שמונע את קריסת ה-cmd ואת אזהרת האבטחה
-    const { stdout, stderr } = await execFileAsync("python", [scriptName, JSON.stringify(payload)], {
+    const pyBin = process.env.PYTHON_BIN || "python";
+    const { stdout, stderr } = await execFileAsync(pyBin, [scriptName, JSON.stringify(payload)], {
       cwd: scriptDirectory
     });
     

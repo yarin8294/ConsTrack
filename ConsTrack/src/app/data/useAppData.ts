@@ -22,6 +22,7 @@ export function useAppData() {
       runComparison: (_opts?: { targetVolumeM3?: number }) => Promise.resolve(),
       refreshReports: () => Promise.resolve(),
       generateReportForRun: () => Promise.resolve(),
+      deleteReport: () => Promise.resolve(),
       sendChat: () => Promise.resolve(""),
       refreshDashboard: () => Promise.resolve(),
       fetchRecommendations: () => Promise.resolve([]),

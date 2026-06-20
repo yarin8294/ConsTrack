@@ -19,6 +19,7 @@ import { ReportsPage } from "../pages/reports/ReportsPage";
 import { ChatHistoryPage } from "../pages/chat/ChatHistoryPage";
 import { SchedulePage } from "../pages/schedule/SchedulePage";
 import { ModelPage } from "../pages/model/ModelPage";
+import { StatisticsPage } from "../pages/statistics/StatisticsPage";
 
 export const router = createBrowserRouter([
   {
@@ -53,6 +54,7 @@ export const router = createBrowserRouter([
           { path: "/reports", element: <ReportsPage /> },
           { path: "/chat", element: <ChatHistoryPage /> },
           { path: "/model", element: <ModelPage /> },
+          { path: "/statistics", element: <StatisticsPage /> },
         ],
       },
     ],

@@ -1,5 +1,5 @@
 // src/components/navigation/Topbar.tsx
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useUi } from "../../app/useUi";
 import { useAuth } from "../../app/auth/AuthProvider";
 import { useAppData } from "../../app/data/useAppData";
@@ -8,62 +8,50 @@ import { useTheme } from "../../app/useTheme";
 export function Topbar() {
   const { toggleNav } = useUi();
   const { user, logout } = useAuth();
-  const { projects, data, setProjectId } = useAppData();
+  const { projects, data } = useAppData();
   const { mode, toggle } = useTheme();
   const location = useLocation();
-  const navigate = useNavigate();
 
   const isProjectsPage = location.pathname === "/";
-  const activeProject = projects.find(p => p.id === data.projectId);
+  const activeProject = projects.find((p) => p.id === data.projectId);
 
   return (
     <header className="sticky top-0 z-10 border-b border-app bg-app backdrop-blur">
-      <div className="px-4 md:px-6 h-16 flex items-center justify-between max-w-7xl mx-auto">
-        {/* Left: Menu + title */}
+      <div className="relative px-4 md:px-6 h-16 flex items-center justify-between max-w-7xl mx-auto">
+        {/* Left: Menu button — hidden on the projects home page */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={toggleNav}
-            className="rounded-lg border border-app px-3 py-2 text-sm bg-app"
-            aria-label="Open menu"
-          >
-            ☰
-          </button>
-
-          <div className="text-sm muted">
-            Construction tracking
-          </div>
-        </div>
-
-        {/* Right: Project selector + theme + user */}
-        <div className="flex items-center gap-3">
-          {/* Show active project name with link to /projects when not on projects page */}
-          {!isProjectsPage && activeProject && (
+          {!isProjectsPage && (
             <button
-              onClick={() => navigate("/")}
-              className="hidden sm:flex items-center gap-2 rounded-lg border border-app bg-app px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-              title="Switch project"
+              onClick={toggleNav}
+              className="rounded-lg border border-app px-3 py-2 text-sm bg-app"
+              aria-label="Open menu"
             >
-              <span className="muted text-xs">Project:</span>
-              <span className="font-medium max-w-32 truncate">{activeProject.name}</span>
-              <span className="muted text-xs">↗</span>
+              ☰
             </button>
           )}
-          {!isProjectsPage && projects.length > 1 && (
-            <div className="hidden md:flex items-center gap-2">
-              <select
-                value={data.projectId || ""}
-                onChange={(e) => setProjectId(e.target.value)}
-                className="rounded-lg border border-app bg-app px-3 py-2 text-sm"
-              >
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+        </div>
 
+        {/* Center: Project name — absolutely positioned so it stays visually centered */}
+        {!isProjectsPage && activeProject && (
+          <div className="absolute left-1/2 -translate-x-1/2 text-sm font-medium">
+            <span className="muted text-xs mr-1">Project:</span>
+            <span className="max-w-[160px] truncate inline-block align-bottom">
+              {activeProject.name}
+            </span>
+          </div>
+        )}
+
+        {/* Right: home + theme toggle + user + logout */}
+        <div className="flex items-center gap-3">
+          {!isProjectsPage && (
+            <Link
+              to="/"
+              className="rounded-lg border border-app px-3 py-2 text-sm bg-app hover:opacity-80 transition-opacity"
+              aria-label="Go to home"
+            >
+              🏠 Home
+            </Link>
+          )}
           <button
             onClick={toggle}
             className="rounded-lg border border-app px-3 py-2 text-sm bg-app"
@@ -74,9 +62,7 @@ export function Topbar() {
           </button>
 
           {user?.name && (
-            <div className="text-xs muted hidden md:block">
-              {user.name}
-            </div>
+            <div className="text-xs muted hidden md:block">{user.name}</div>
           )}
 
           <button

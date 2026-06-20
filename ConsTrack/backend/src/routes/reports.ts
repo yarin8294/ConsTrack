@@ -44,14 +44,21 @@ router.post("/", authenticateToken, async (req, res) => {
 
   console.log(`[DEBUG Node.js Router] Fetched Scan Dates -> T1: ${t1Date} | T2: ${t2Date}`);
 
-  const { pdfPath, xlsxPath } = await generateReportFiles({
-    outDir: REPORTS_DIR,
-    projectName: project?.name ?? projectId,
-    run: run as any,
-    zones: zones as any,
-    t1ScanDate: String(t1Date), 
-    t2ScanDate: String(t2Date), 
-  });
+  let pdfPath: string;
+  let xlsxPath: string;
+  try {
+    ({ pdfPath, xlsxPath } = await generateReportFiles({
+      outDir: REPORTS_DIR,
+      projectName: project?.name ?? projectId,
+      run: run as any,
+      zones: zones as any,
+      t1ScanDate: String(t1Date),
+      t2ScanDate: String(t2Date),
+    }));
+  } catch (err: any) {
+    console.error("[reports] generateReportFiles failed:", err.message);
+    return res.status(500).json({ error: `Report generation failed: ${err.message}` });
+  }
 
   const rep = await ReportModel.create({
     projectId,

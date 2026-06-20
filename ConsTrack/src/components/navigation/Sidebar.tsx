@@ -72,18 +72,17 @@ export function Sidebar() {
 
         <nav className="p-4 space-y-1">
           <NavLink
-            to="/"
-            end
-            className={({ isActive }) => `${base} ${isActive ? active : idle}`}
-          >
-            Projects
-          </NavLink>
-
-          <NavLink
             to="/dashboard"
             className={({ isActive }) => `${base} ${isActive ? active : idle}`}
           >
             Dashboard
+          </NavLink>
+
+          <NavLink
+            to="/statistics"
+            className={({ isActive }) => `${base} ${isActive ? active : idle}`}
+          >
+            Statistics
           </NavLink>
 
           <NavLink
@@ -114,13 +113,6 @@ export function Sidebar() {
             className={({ isActive }) => `${base} ${isActive ? active : idle}`}
           >
             Reports
-          </NavLink>
-
-          <NavLink
-            to="/chat"
-            className={({ isActive }) => `${base} ${isActive ? active : idle}`}
-          >
-            Chatbot
           </NavLink>
 
           <NavLink
