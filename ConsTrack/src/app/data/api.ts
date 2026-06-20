@@ -1,3 +1,4 @@
+// HTTP client functions for the ConsTrack API — thin wrappers around fetch with auth headers.
 import type { ComparisonRun } from "./types";
 
 export type ApiConfig = {

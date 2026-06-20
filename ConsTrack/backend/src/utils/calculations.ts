@@ -1,3 +1,4 @@
+// Volume and progress calculation helpers for the LiDAR comparison pipeline.
 import { ZoneModel, type ZoneDoc } from "../models.js";
 
 // ── Task 4.3 types ────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+// Shared TypeScript types for the ConsTrack frontend data layer.
 export type ScanId = string;
 export type AreaId = string;
 export type RunId = string;
@@ -29,6 +30,7 @@ export type AreaMetric = {
   deviationDays: number;
 };
 
+// A detected object relocation — same physical element, different position between scans.
 export type DisplacementEvent = {
   fromClusterId: number;
   toClusterId: number;

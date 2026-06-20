@@ -471,27 +471,8 @@ def match_displacements(
     max_displacement_m: float = 5.0,
     volume_ratio_range: tuple[float, float] = (0.6, 1.7),
 ) -> dict:
-    """
-    Pair removed clusters with added clusters that look like the same object
-    in a new location. Returns:
-    {
-      "events": [
-        {
-          "fromClusterId": int, "toClusterId": int,
-          "fromCentroid": [x,y,z], "toCentroid": [x,y,z],
-          "displacementM": float,
-          "volumeM3": float,        # average of from/to OBB volumes
-        }, ...
-      ],
-      "newConstructionM3": float,   # sum of unmatched added obbVolumeM3
-      "demolitionM3":      float,   # sum of unmatched removed obbVolumeM3
-      "displacementM3":    float,   # sum of event volumeM3
-      "stats": {
-        "addedClusters": int, "removedClusters": int,
-        "matched": int, "unmatchedAdded": int, "unmatchedRemoved": int,
-      }
-    }
-    """
+    """Pair removed clusters to added clusters by centroid proximity + volume ratio.
+    Unmatched added = new construction; unmatched removed = genuine demolition."""
     candidates: list[tuple[int, int, float]] = []
     for r_idx, rc in enumerate(removed_clusters):
         for a_idx, ac in enumerate(added_clusters):

@@ -1,3 +1,4 @@
+// Node → Python bridge: spawns each Python script as a child process and parses its JSON stdout.
 import path from "path";
 import { spawn, ChildProcess } from "child_process";
 
@@ -235,6 +236,7 @@ export interface DeltaResult {
   path: string | null;
 }
 
+// One matched pair from displacement analysis — cluster gone from one spot, appeared at another.
 export interface DisplacementEvent {
   fromClusterId: number;
   toClusterId: number;
@@ -244,6 +246,7 @@ export interface DisplacementEvent {
   volumeM3: number;
 }
 
+// Aggregated output from change_detector.py's displacement matching step.
 export interface DisplacementResult {
   events: DisplacementEvent[];
   newConstructionM3: number;

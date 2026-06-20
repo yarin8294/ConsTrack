@@ -1,3 +1,4 @@
+// GET /api/runs — list runs; POST /api/runs — kick off a new 3-step Python pipeline.
 import path from "path";
 import fs from "fs";
 import { Router } from "express";

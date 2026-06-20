@@ -1,3 +1,4 @@
+// Dashboard — KPI tiles, latest run summary, progress trend chart, and AI recommendations.
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";

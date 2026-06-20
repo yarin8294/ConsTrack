@@ -1,3 +1,4 @@
+// React context provider that owns all project data and exposes actions to the rest of the app.
 import { createContext, useEffect, useMemo, useState } from "react";
 import type { AppData, AreaId, AreaNode, ComparisonRun, ScanId } from "./types";
 import {
@@ -340,6 +341,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         await loadAll(projectId);
       },
 
+      // Validates scan selection, fires the run, then reloads project data so the UI updates.
       runComparison: async (opts?: { targetVolumeM3?: number }) => {
         const projectId = getProjectId();
         const t1 = data.selectedT1;

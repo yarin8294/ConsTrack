@@ -1,3 +1,4 @@
+// Compare page — scan selector, target volume input, run trigger, and latest output metrics.
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card } from "../../components/ui/Card";
@@ -42,6 +43,7 @@ export function ComparePage() {
     }
   }, [latest?.status]);
 
+  // Keep the progress bar in sync with backend SSE events while a run is active.
   useEffect(() => {
     const unsubProgress = subscribe("run.progress", (msg) => {
       setRunPct(msg.pct ?? 0);
