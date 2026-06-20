@@ -2,14 +2,17 @@ import path from "path";
 import fs from "fs";
 import { Router } from "express";
 import { authenticateToken } from "../middleware/auth.js";
-import { RunModel, ScanModel, ZoneModel } from "../models.js";
+import { RunModel, ScanModel, ZoneModel, ProjectModel } from "../models.js";
 import { publish } from "../realtime.js";
 import { runPythonPreprocess, runPythonChangeDetect, runPythonVolumeOne } from "../services/python.js";
-import { calcProgressFromDelta, getLeafZones, forecastDateISO } from "../utils/calculations.js";
+import { calcProgressFromDelta, calcTask43Metrics, getLeafZones, forecastDateISO } from "../utils/calculations.js";
 
 // Intermediate PLY files produced during a run are stored here.
 const RUNS_DIR = path.resolve(process.cwd(), "uploads", "runs");
 fs.mkdirSync(RUNS_DIR, { recursive: true });
+
+// Fallback scope baseline when neither the request body nor the ProjectDoc carry one.
+const DEFAULT_TARGET_M3 = 25.0;
 
 export const router = Router();
 
@@ -32,13 +35,26 @@ router.get("/", authenticateToken, async (req, res) => {
       overallProgressPct: r.overallProgressPct,
       forecastCompletionISO: r.forecastCompletionISO,
       metricsByZone: r.metricsByZone,
-      // New fields from the full pipeline
+      // Full pipeline results
       fitness: r.fitness,
       rmseCm: r.rmseCm,
       addedVolumeM3: r.addedVolumeM3,
       removedVolumeM3: r.removedVolumeM3,
       addedElementCount: r.addedElementCount,
       removedElementCount: r.removedElementCount,
+      // Task 4.3
+      daysElapsed: r.daysElapsed,
+      newConstructionM3: r.newConstructionM3,
+      netProgressM3: r.netProgressM3,
+      progressRateM3PerDay: r.progressRateM3PerDay,
+      grossRateM3PerDay: r.grossRateM3PerDay,
+      completionPctDelta: r.completionPctDelta,
+      productivityIndex: r.productivityIndex,
+      etaISO: r.etaISO,
+      // Displacement provenance
+      volumeBasis: r.volumeBasis,
+      degenerateClusterCount: r.degenerateClusterCount,
+      task43Error: r.task43Error,
     }))
   );
 });
@@ -48,6 +64,9 @@ router.post("/", authenticateToken, async (req, res) => {
   const t1ScanId  = String(req.body?.t1ScanId || "");
   const t2ScanId  = String(req.body?.t2ScanId || "");
   const voxelSize = Number(req.body?.voxelSize || 0.05);
+  // Optional scope override from request body — takes priority over project setting and DEFAULT.
+  const reqTargetVolumeM3: number | undefined =
+    req.body?.targetVolumeM3 != null ? Number(req.body.targetVolumeM3) : undefined;
 
   if (!t1ScanId || !t2ScanId) return res.status(400).json({ error: "t1ScanId and t2ScanId are required" });
   if (t1ScanId === t2ScanId)  return res.status(400).json({ error: "t1 and t2 must be different scans" });
@@ -182,7 +201,12 @@ router.post("/", authenticateToken, async (req, res) => {
       // alignmentConfidence comes directly from ICP fitness/RMSE — no guessing.
       const conf = preprocessResult.alignmentConfidence.toLowerCase() as "high" | "medium" | "low";
 
-      await RunModel.findByIdAndUpdate(runId, {
+      // ── Task 4.3 metrics ────────────────────────────────────────────────────
+      const disp = changes.displacement;
+      const volumeBasis = disp?.stats.volumeBasis;
+      const degenerateClusterCount = disp?.stats.degenerateClusterCount;
+
+      const updateDoc: Record<string, unknown> = {
         status: "done",
         alignmentConfidence: conf,
         volumeT1M3,
@@ -199,7 +223,26 @@ router.post("/", authenticateToken, async (req, res) => {
         removedVolumeM3,
         addedElementCount:   changes.added.elementCount,
         removedElementCount: changes.removed.elementCount,
-      });
+      };
+
+      try {
+        const project = await ProjectModel.findById(projectId).lean();
+        const task43 = calcTask43Metrics({
+          addedM3:        addedVolumeM3,
+          removedM3:      removedVolumeM3,
+          displacementM3: disp?.displacementM3 ?? 0,
+          t1ISO:          t1.capturedAtISO,
+          t2ISO:          t2.capturedAtISO,
+          targetVolumeM3: reqTargetVolumeM3 ?? project?.targetVolumeM3 ?? DEFAULT_TARGET_M3,
+          plannedRateM3PerDay: undefined,
+        });
+        Object.assign(updateDoc, task43, { volumeBasis, degenerateClusterCount });
+      } catch (err) {
+        console.error({ runId, err }, "calcTask43Metrics failed");
+        updateDoc.task43Error = err instanceof Error ? err.message : String(err);
+      }
+
+      await RunModel.findByIdAndUpdate(runId, updateDoc);
 
       publish(projectId, { type: "run.done", runId, status: "done" });
     } catch (e: any) {

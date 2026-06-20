@@ -220,6 +220,8 @@ export interface ClusterInfo {
   voxelVolumeM3: number;
   obbVolumeM3: number;
   obbExtentM: [number, number, number];
+  hullVolumeM3: number;
+  hullDegenerate: boolean;
 }
 
 /** One direction of the bidirectional comparison (added OR removed). */
@@ -233,10 +235,37 @@ export interface DeltaResult {
   path: string | null;
 }
 
+export interface DisplacementEvent {
+  fromClusterId: number;
+  toClusterId: number;
+  fromCentroid: [number, number, number];
+  toCentroid: [number, number, number];
+  displacementM: number;
+  volumeM3: number;
+}
+
+export interface DisplacementResult {
+  events: DisplacementEvent[];
+  newConstructionM3: number;
+  demolitionM3: number;
+  displacementM3: number;
+  stats: {
+    addedClusters: number;
+    removedClusters: number;
+    matched: number;
+    unmatchedAdded: number;
+    unmatchedRemoved: number;
+    volumeBasis: "hull" | "obb" | "voxel";
+    degenerateClusterCount: number;
+  };
+}
+
 export interface ChangeDetectResult {
   added: DeltaResult;
   removed: DeltaResult;
   elapsedS: number;
+  /** Present unless --no-displacement was passed. */
+  displacement?: DisplacementResult;
 }
 
 export async function runPythonChangeDetect(

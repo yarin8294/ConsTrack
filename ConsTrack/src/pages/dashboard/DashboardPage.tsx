@@ -21,10 +21,26 @@ export function DashboardPage() {
   const { data, dashboard, fetchRecommendations } = useAppData();
   const latest = data.runs[0];
 
-  const overall = `${Math.round(dashboard.overallProgressPct)}%`;
-  const volumeChange = `${dashboard.volumeChangeM3.toFixed(3)} m³`;
-  const forecast = dashboard.forecastCompletionISO ? formatDate(dashboard.forecastCompletionISO) : "—";
-  const productivity = dashboard.productivityIndex ? dashboard.productivityIndex.toFixed(2) : "1.00";
+  // TODO: backend /api/dashboard endpoint should return completionPctDelta/etaISO directly — frontend fallback to runs[0] is a stopgap
+  const completionValue = latest?.completionPctDelta ?? dashboard.overallProgressPct;
+  const overall = completionValue !== undefined ? `${completionValue.toFixed(1)}%` : "—";
+  const volumeChange =
+    dashboard.volumeChangeM3 !== undefined
+      ? `${dashboard.volumeChangeM3.toFixed(3)} m³`
+      : "—";
+  const forecastISO = latest?.etaISO ?? dashboard.forecastCompletionISO;
+  const forecast = forecastISO
+    ? (() => {
+        const d = new Date(forecastISO);
+        return isNaN(d.getTime())
+          ? "—"
+          : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+      })()
+    : "—";
+  const productivity =
+    dashboard.productivityIndex !== undefined && dashboard.productivityIndex !== null
+      ? dashboard.productivityIndex.toFixed(2)
+      : "—";
 
   const [recs, setRecs] = useState<string[]>([]);
   const [recStatus, setRecStatus] = useState<string>("Loading recommendations…");
@@ -79,7 +95,7 @@ export function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi label="Overall progress" value={overall} hint="Completion percentage" />
+        <Kpi label="Completion" value={overall} hint="Completion percentage" />
         <Kpi label="Volume change" value={volumeChange} hint="Between baseline and latest scan" />
         <Kpi label="Forecast completion date" value={forecast} hint="Estimated project finish" />
         <Kpi label="Productivity index" value={productivity} hint="Higher is better" />

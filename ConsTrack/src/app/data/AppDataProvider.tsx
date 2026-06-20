@@ -46,7 +46,7 @@ type AppDataContextValue = {
   linkScanToArea: (id: AreaId, scanIds: string[]) => Promise<void>;
 
   // Comparison
-  runComparison: () => Promise<void>;
+  runComparison: (opts?: { targetVolumeM3?: number }) => Promise<void>;
 
   // Reports
   refreshReports: () => Promise<void>;
@@ -66,10 +66,10 @@ type AppDataContextValue = {
   updateProject: (id: string, data: { name?: string; description?: string; startDateISO?: string; targetFinishDateISO?: string }) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   dashboard: {
-    overallProgressPct: number;
-    volumeChangeM3: number;
+    overallProgressPct?: number;
+    volumeChangeM3?: number;
     forecastCompletionISO: string;
-    productivityIndex: number;
+    productivityIndex?: number;
     series: { t: string; progressPct: number }[];
   };
   reports: { id: string; createdAtISO: string; pdfUrl: string; xlsxUrl: string; runId: string }[];
@@ -93,10 +93,10 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | undefined>(undefined);
 
   const [dashboard, setDashboard] = useState<AppDataContextValue["dashboard"]>({
-    overallProgressPct: 0,
-    volumeChangeM3: 0,
+    overallProgressPct: undefined,
+    volumeChangeM3: undefined,
     forecastCompletionISO: "",
-    productivityIndex: 1.0,
+    productivityIndex: undefined,
     series: [],
   });
   const [reports, setReports] = useState<AppDataContextValue["reports"]>([]);
@@ -141,7 +141,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         uploadedAtISO: s.uploadedAtISO,
         notes: s.notes,
       })),
-      runs: (runs || []).map((r) => ({
+      runs: (runs || []).map((r: any) => ({
         id: r.id,
         createdAtISO: r.createdAtISO,
         t1ScanId: r.t1ScanId,
@@ -168,6 +168,22 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         removedVolumeM3: r.removedVolumeM3,
         addedElementCount: r.addedElementCount,
         removedElementCount: r.removedElementCount,
+        // Task 4.3 — pass through as-is; leave undefined when absent
+        daysElapsed: r.daysElapsed,
+        newConstructionM3: r.newConstructionM3,
+        demolitionM3: r.demolitionM3,
+        netProgressM3: r.netProgressM3,
+        displacementM3: r.displacementM3,
+        progressRateM3PerDay: r.progressRateM3PerDay,
+        grossRateM3PerDay: r.grossRateM3PerDay,
+        completionPctDelta: r.completionPctDelta,
+        productivityIndex: r.productivityIndex,
+        etaISO: r.etaISO,
+        targetVolumeM3: r.targetVolumeM3,
+        volumeBasis: r.volumeBasis,
+        degenerateClusterCount: r.degenerateClusterCount,
+        task43Error: r.task43Error,
+        displacementEvents: r.displacementEvents,
       })) as ComparisonRun[],
     }));
 
@@ -324,12 +340,12 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
         await loadAll(projectId);
       },
 
-      runComparison: async () => {
+      runComparison: async (opts?: { targetVolumeM3?: number }) => {
         const projectId = getProjectId();
         const t1 = data.selectedT1;
         const t2 = data.selectedT2;
         if (!t1 || !t2 || t1 === t2) throw new Error("Select two different scans");
-        await createRun(projectId, t1, t2, 0.05);
+        await createRun(projectId, t1, t2, 0.05, opts?.targetVolumeM3);
         await loadAll(projectId);
       },
 

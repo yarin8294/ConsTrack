@@ -14,6 +14,8 @@ export type ProjectDoc = {
   description?: string;
   startDateISO?: string;
   targetFinishDateISO?: string;
+  /** Total planned construction volume in m³ — used as the scope baseline for Task 4.3 metrics. */
+  targetVolumeM3?: number;
 };
 
 const ProjectSchema = new Schema<ProjectDoc>(
@@ -24,6 +26,7 @@ const ProjectSchema = new Schema<ProjectDoc>(
     description: { type: String, required: false },
     startDateISO: { type: String, required: false },
     targetFinishDateISO: { type: String, required: false },
+    targetVolumeM3: { type: Number, required: false },
   },
   { versionKey: false }
 );
@@ -133,6 +136,20 @@ export type RunDoc = {
   removedVolumeM3?: number;
   addedElementCount?: number;
   removedElementCount?: number;
+  // ── Task 4.3 metrics ──────────────────────────────────────────────────────
+  daysElapsed?: number;
+  newConstructionM3?: number;
+  netProgressM3?: number;
+  progressRateM3PerDay?: number;
+  grossRateM3PerDay?: number;
+  completionPctDelta?: number;
+  productivityIndex?: number;
+  etaISO?: string;
+  // ── Displacement provenance ───────────────────────────────────────────────
+  volumeBasis?: "hull" | "obb" | "voxel";
+  degenerateClusterCount?: number;
+  /** Populated only when calcTask43Metrics threw — signals bad dates or missing scope. */
+  task43Error?: string;
 };
 
 const MetricSchema = new Schema<AreaMetric>(
@@ -165,6 +182,19 @@ const RunSchema = new Schema<RunDoc>(
     removedVolumeM3: { type: Number, required: false },
     addedElementCount: { type: Number, required: false },
     removedElementCount: { type: Number, required: false },
+    // Task 4.3
+    daysElapsed: { type: Number, required: false },
+    newConstructionM3: { type: Number, required: false },
+    netProgressM3: { type: Number, required: false },
+    progressRateM3PerDay: { type: Number, required: false },
+    grossRateM3PerDay: { type: Number, required: false },
+    completionPctDelta: { type: Number, required: false },
+    productivityIndex: { type: Number, required: false },
+    etaISO: { type: String, required: false },
+    // Displacement provenance
+    volumeBasis: { type: String, required: false },
+    degenerateClusterCount: { type: Number, required: false },
+    task43Error: { type: String, required: false },
   },
   { versionKey: false }
 );

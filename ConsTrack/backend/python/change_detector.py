@@ -32,7 +32,8 @@ import time
 
 import numpy as np
 import open3d as o3d
-from scipy.spatial import cKDTree
+from scipy.spatial import ConvexHull, cKDTree
+from scipy.spatial.qhull import QhullError
 from sklearn.cluster import DBSCAN
 
 # Silence Open3D's C++ logger. Its [Open3D WARNING]/[Open3D INFO] lines are
@@ -54,6 +55,9 @@ log = logging.getLogger(__name__)
 # Delta clouds larger than this are voxel-downsampled before DBSCAN to bound its
 # time/memory (it otherwise hangs or OOMs on dense 100k+ point clouds). Tunable.
 CLUSTER_DOWNSAMPLE_THRESHOLD = 100_000
+
+# Volume basis used by match_displacements() for ratio gating and event volumeM3.
+VOLUME_BASIS = "hull"
 
 #Load point clouds
 def load_ply(path: str) -> o3d.geometry.PointCloud:
@@ -382,6 +386,19 @@ def compute_cluster_volumes(
         obb_vol_m3 = float(np.prod(obb.extent))
         obb_extent = [round(float(e), 4) for e in obb.extent]
 
+        #Convex hull volume via scipy — tighter than OBB for convex surfaces.
+        # Falls back to OBB on degenerate (flat/collinear) clusters.
+        try:
+            hull_vol_m3 = float(ConvexHull(cluster_pts).volume)
+            hull_degenerate = False
+        except QhullError:
+            hull_vol_m3 = obb_vol_m3
+            hull_degenerate = True
+            log.warning(
+                "ConvexHull failed for cluster %d (%d pts) — substituting OBB %.6f m3",
+                int(label), n_pts, obb_vol_m3,
+            )
+
         #Centroid for map / dashboard pinning
         centroid = cluster_pts.mean(axis=0)
 
@@ -392,16 +409,19 @@ def compute_cluster_volumes(
             "voxelVolumeM3":   round(voxel_vol_m3, 6),
             "obbVolumeM3":     round(obb_vol_m3, 6),
             "obbExtentM":      obb_extent,         # [length, height, thickness] (approx)
+            "hullVolumeM3":    round(hull_vol_m3, 6),
+            "hullDegenerate":  hull_degenerate,
         })
 
     #Descending by voxel volume — largest new element first in the JSON list
     clusters.sort(key=lambda c: c["voxelVolumeM3"], reverse=True)
 
     log.info(
-        "Volume computed for %d clusters. Largest: %.4f m³ voxel / %.4f m³ OBB",
+        "Volume computed for %d clusters. Largest: %.4f m3 voxel / %.4f m3 OBB / %.4f m3 hull",
         len(clusters),
-        clusters[0]["voxelVolumeM3"] if clusters else 0.0,
-        clusters[0]["obbVolumeM3"]   if clusters else 0.0,
+        clusters[0]["voxelVolumeM3"]  if clusters else 0.0,
+        clusters[0]["obbVolumeM3"]    if clusters else 0.0,
+        clusters[0]["hullVolumeM3"]   if clusters else 0.0,
     )
     return clusters
 
@@ -442,6 +462,111 @@ def export_colored_ply(pts_new: np.ndarray, labels: np.ndarray, out_path: str) -
     o3d.io.write_point_cloud(out_path, pcd_out, write_ascii=False, compressed=True)
     log.info("Coloured new-elements PLY written → %s", out_path)
 
+
+# Displacement matching
+def match_displacements(
+    added_clusters: list[dict],
+    removed_clusters: list[dict],
+    *,
+    max_displacement_m: float = 5.0,
+    volume_ratio_range: tuple[float, float] = (0.6, 1.7),
+) -> dict:
+    """
+    Pair removed clusters with added clusters that look like the same object
+    in a new location. Returns:
+    {
+      "events": [
+        {
+          "fromClusterId": int, "toClusterId": int,
+          "fromCentroid": [x,y,z], "toCentroid": [x,y,z],
+          "displacementM": float,
+          "volumeM3": float,        # average of from/to OBB volumes
+        }, ...
+      ],
+      "newConstructionM3": float,   # sum of unmatched added obbVolumeM3
+      "demolitionM3":      float,   # sum of unmatched removed obbVolumeM3
+      "displacementM3":    float,   # sum of event volumeM3
+      "stats": {
+        "addedClusters": int, "removedClusters": int,
+        "matched": int, "unmatchedAdded": int, "unmatchedRemoved": int,
+      }
+    }
+    """
+    candidates: list[tuple[int, int, float]] = []
+    for r_idx, rc in enumerate(removed_clusters):
+        for a_idx, ac in enumerate(added_clusters):
+            vR = rc["hullVolumeM3"]
+            vA = ac["hullVolumeM3"]
+            if vR <= 0 or vA <= 0:
+                continue
+            ratio = min(vR, vA) / max(vR, vA)
+            if ratio < volume_ratio_range[0]:
+                continue
+            rc_c = np.array(rc["centroidXYZ"], dtype=np.float64)
+            ac_c = np.array(ac["centroidXYZ"], dtype=np.float64)
+            dist = float(np.linalg.norm(ac_c - rc_c))
+            if dist >= max_displacement_m:
+                continue
+            candidates.append((r_idx, a_idx, dist))
+
+    # Greedy nearest-first matching
+    candidates.sort(key=lambda x: x[2])
+
+    consumed_removed: set[int] = set()
+    consumed_added: set[int] = set()
+    events: list[dict] = []
+
+    for r_idx, a_idx, dist in candidates:
+        if r_idx in consumed_removed or a_idx in consumed_added:
+            continue
+        consumed_removed.add(r_idx)
+        consumed_added.add(a_idx)
+        rc = removed_clusters[r_idx]
+        ac = added_clusters[a_idx]
+        vol = (rc["hullVolumeM3"] + ac["hullVolumeM3"]) / 2.0
+        events.append({
+            "fromClusterId": rc["clusterId"],
+            "toClusterId":   ac["clusterId"],
+            "fromCentroid":  rc["centroidXYZ"],
+            "toCentroid":    ac["centroidXYZ"],
+            "displacementM": round(dist, 4),
+            "volumeM3":      round(vol, 6),
+        })
+
+    unmatched_added   = [ac for i, ac in enumerate(added_clusters)   if i not in consumed_added]
+    unmatched_removed = [rc for i, rc in enumerate(removed_clusters) if i not in consumed_removed]
+
+    new_construction_m3 = sum(c["hullVolumeM3"] for c in unmatched_added)
+    demolition_m3       = sum(c["hullVolumeM3"] for c in unmatched_removed)
+    displacement_m3     = sum(e["volumeM3"] for e in events)
+
+    degenerate_count = sum(
+        1 for c in list(added_clusters) + list(removed_clusters)
+        if c.get("hullDegenerate", False)
+    )
+
+    log.info(
+        "Displacement matching: %d removed x %d added -> %d matched, "
+        "%d unmatched added, %d unmatched removed",
+        len(removed_clusters), len(added_clusters),
+        len(events), len(unmatched_added), len(unmatched_removed),
+    )
+
+    return {
+        "events":            events,
+        "newConstructionM3": round(new_construction_m3, 6),
+        "demolitionM3":      round(demolition_m3, 6),
+        "displacementM3":    round(displacement_m3, 6),
+        "stats": {
+            "addedClusters":        len(added_clusters),
+            "removedClusters":      len(removed_clusters),
+            "matched":              len(events),
+            "unmatchedAdded":       len(unmatched_added),
+            "unmatchedRemoved":     len(unmatched_removed),
+            "volumeBasis":          VOLUME_BASIS,
+            "degenerateClusterCount": degenerate_count,
+        },
+    }
 
 
 # PIPELINE ORCHESTRATOR
@@ -537,6 +662,7 @@ def detect_changes(
     voxel_size: float = 0.05,
     eps: float = 0.15,
     min_pts: int = 20,
+    run_displacement: bool = True,
 ) -> dict:
     """
     Run BIDIRECTIONAL change detection and return a JSON-ready dict.
@@ -592,11 +718,14 @@ def detect_changes(
         elapsed, added["volumeM3"], removed["volumeM3"],
     )
 
-    return {
+    result: dict = {
         "added":    added,
         "removed":  removed,
         "elapsedS": elapsed,
     }
+    if run_displacement:
+        result["displacement"] = match_displacements(added["clusters"], removed["clusters"])
+    return result
 
 
 # CLI  —  called by python.ts via child_process.spawn
@@ -612,6 +741,8 @@ def main() -> int:
     ap.add_argument("--voxel",       type=float, default=0.05,   help="Voxel size for volume in metres (default 0.05)")
     ap.add_argument("--eps",         type=float, default=0.15,   help="DBSCAN neighbourhood radius in metres (default 0.15)")
     ap.add_argument("--min_pts",     type=int,   default=20,     help="DBSCAN minimum cluster size (default 20)")
+    ap.add_argument("--no-displacement", action="store_true", default=False,
+                    help="Skip displacement matching step (omits 'displacement' key from output)")
     args = ap.parse_args()
 
     try:
@@ -624,6 +755,7 @@ def main() -> int:
             voxel_size=args.voxel,
             eps=args.eps,
             min_pts=args.min_pts,
+            run_displacement=not args.no_displacement,
         )
         print(json.dumps(result), flush=True)
         return 0

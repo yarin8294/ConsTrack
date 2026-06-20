@@ -1,3 +1,5 @@
+import type { ComparisonRun } from "./types";
+
 export type ApiConfig = {
   projectId?: string;
 };
@@ -181,22 +183,34 @@ export async function deleteScan(id: string) {
   return api(`/api/scans/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function fetchRuns(projectId: string) {
-  return api<any[]>(`/api/runs?projectId=${encodeURIComponent(projectId)}`);
+export async function fetchRuns(projectId: string): Promise<ComparisonRun[]> {
+  return api<ComparisonRun[]>(`/api/runs?projectId=${encodeURIComponent(projectId)}`);
 }
 /**
  * Triggers a new volume comparison run between two scans.
  */
-export async function createRun(projectId: string, t1ScanId: string, t2ScanId: string, voxelSize?: number) {
+export async function createRun(
+  projectId: string,
+  t1ScanId: string,
+  t2ScanId: string,
+  voxelSize?: number,
+  targetVolumeM3?: number,
+): Promise<{ id: string; status: string }> {
   return api<{ id: string; status: string }>(`/api/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId, t1ScanId, t2ScanId, voxelSize }),
+    body: JSON.stringify({
+      projectId,
+      t1ScanId,
+      t2ScanId,
+      voxelSize,
+      ...(targetVolumeM3 !== undefined ? { targetVolumeM3 } : {}),
+    }),
   });
 }
 
 export async function fetchDashboard(projectId: string) {
-  return api<{ overallProgressPct: number; volumeChangeM3: number; forecastCompletionISO: string; productivityIndex: number; series: { t: string; progressPct: number }[] }>(
+  return api<{ overallProgressPct?: number; volumeChangeM3?: number; forecastCompletionISO: string; productivityIndex?: number; series: { t: string; progressPct: number }[] }>(
     `/api/dashboard?projectId=${encodeURIComponent(projectId)}`
   );
 }

@@ -29,6 +29,15 @@ export type AreaMetric = {
   deviationDays: number;
 };
 
+export type DisplacementEvent = {
+  fromClusterId: number;
+  toClusterId: number;
+  fromCentroid: [number, number, number];
+  toCentroid: [number, number, number];
+  displacementM: number;
+  volumeM3: number;
+};
+
 export type ComparisonRun = {
   id: RunId;
   createdAtISO: string;
@@ -50,6 +59,22 @@ export type ComparisonRun = {
   removedVolumeM3?: number;
   addedElementCount?: number;
   removedElementCount?: number;
+  // Task 4.3 fields (all optional — older runs won't have them)
+  daysElapsed?: number;
+  newConstructionM3?: number;
+  demolitionM3?: number;
+  netProgressM3?: number;
+  displacementM3?: number;
+  progressRateM3PerDay?: number;
+  grossRateM3PerDay?: number;
+  completionPctDelta?: number;
+  productivityIndex?: number;
+  etaISO?: string;
+  targetVolumeM3?: number;
+  volumeBasis?: "hull" | "obb" | "voxel";
+  degenerateClusterCount?: number;
+  task43Error?: string;
+  displacementEvents?: DisplacementEvent[];
 };
 
 export type AppData = {
