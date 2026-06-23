@@ -31,9 +31,10 @@ export function Topbar() {
           )}
         </div>
 
-        {/* Center: Project name — absolutely positioned so it stays visually centered */}
+
+        {/* Center: Project name — completely hidden on mobile, absolute and centered on desktop */}
         {!isProjectsPage && activeProject && (
-          <div className="absolute left-1/2 -translate-x-1/2 text-sm font-medium">
+          <div className="hidden md:absolute md:block md:left-1/2 md:-translate-x-1/2 text-sm font-medium">
             <span className="muted text-xs mr-1">Project:</span>
             <span className="max-w-[160px] truncate inline-block align-bottom">
               {activeProject.name}
