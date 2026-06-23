@@ -30,7 +30,17 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
   const txt = await res.text();
-  const json = txt ? JSON.parse(txt) : null;
+  let json: any = null;
+  if (txt) {
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json") || txt.trim().startsWith("{") || txt.trim().startsWith("[")) {
+      try {
+        json = JSON.parse(txt);
+      } catch {
+        json = null;
+      }
+    }
+  }
 
   // Handle authentication errors
   if (res.status === 401 || res.status === 403) {

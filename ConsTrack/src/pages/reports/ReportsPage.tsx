@@ -6,7 +6,9 @@ import { formatDate } from "../../app/format";
 export function ReportsPage() {
   const { reports, deleteReport, refreshReports } = useAppData();
 
-  useEffect(() => { void refreshReports(); }, []);
+  useEffect(() => { 
+    void refreshReports(); 
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -17,15 +19,26 @@ export function ReportsPage() {
         </div>
       </div>
 
-      <Card title="Report history" subtitle={`${reports.length} report${reports.length !== 1 ? "s" : ""}`}>
+      <Card 
+        title="Report history" 
+        subtitle={`${reports.length} report${reports.length !== 1 ? "s" : ""}`}
+      >
         {reports.length === 0 ? (
           <div className="text-sm muted">No reports yet. Run a comparison to generate one.</div>
         ) : (
           <div className="divide-y divide-app">
             {reports.map((r) => (
-              <div key={r.id} className="flex items-center justify-between py-3 gap-3">
-                <div className="text-sm font-medium">Report — {formatDate(r.createdAtISO)}</div>
-                <div className="flex gap-2 shrink-0">
+              <div 
+                key={r.id} 
+                className="flex flex-col sm:flex-row sm:items-center justify-between py-4 gap-3"
+              >
+                {/* תצוגת התאריך */}
+                <div className="text-sm font-medium">
+                  Report — {formatDate(r.createdAtISO)}
+                </div>
+                
+                {/* אזור הכפתורים - מתאים את עצמו למסך ומסדר את הכפתורים בצורה בטוחה */}
+                <div className="flex flex-wrap gap-2 shrink-0 justify-start sm:justify-end">
                   <a
                     href={r.pdfUrl}
                     target="_blank"

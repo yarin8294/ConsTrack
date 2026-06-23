@@ -441,7 +441,14 @@ def main():
         VOL_T1 = float(run_obj.get("volumeT1M3", 0.0))
         VOL_T2 = float(run_obj.get("volumeT2M3", 0.0))
         VOL_DELTA = float(run_obj.get("volumeChangeM3", 0.0))
-        FORECAST = str(run_obj.get("forecastCompletionISO", ""))[:10]  
+        FORECAST = str(run_obj.get("etaISO", ""))[:10]  
+
+        raw_forecast = run_obj.get("etaISO")
+        print(f"[DEBUG Forecast] Raw value from Node: '{raw_forecast}'", flush=True)
+
+        FORECAST = str(raw_forecast or "")[:10]
+        if not FORECAST:
+            print("[DEBUG Forecast WARNING] FORECAST parsed as empty string!", flush=True)
 
         ZONES = []
         metrics_by_zone = {m["zoneId"]: m for m in run_obj.get("metricsByZone", [])}

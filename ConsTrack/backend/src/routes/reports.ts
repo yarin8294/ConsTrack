@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs/promises";
 import { Router } from "express";
 import { authenticateToken } from "../middleware/auth.js";
 import { ProjectModel, RunModel, ZoneModel, ReportModel, ScanModel } from "../models.js";
@@ -73,4 +74,55 @@ router.post("/", authenticateToken, async (req, res) => {
     pdfUrl: `/downloads/reports/${path.basename(pdfPath)}`,
     xlsxUrl: `/downloads/reports/${path.basename(xlsxPath)}`,
   });
+
+
+});
+
+router.delete("/:id", authenticateToken, async (req, res) => {
+  const reportId = req.params.id;
+  
+  console.log(`\n[DEBUG DELETE]  Started deletion process for report ID: ${reportId}`);
+
+  try {
+    // 1. חיפוש הדוח במסד הנתונים
+    console.log(`[DEBUG DELETE]  Searching for report in Database...`);
+    const report = await ReportModel.findById(reportId);
+    
+    if (!report) {
+      console.log(`[DEBUG DELETE]  Report NOT FOUND in DB for ID: ${reportId}`);
+      return res.status(404).json({ error: "Report not found" });
+    }
+
+    console.log(`[DEBUG DELETE]  Found report! PDF Path: ${report.pdfPath} | XLSX Path: ${report.xlsxPath}`);
+
+    // 2. מחיקת הקבצים הפיזיים מהדיסק
+    try {
+      if (report.pdfPath) {
+        console.log(`[DEBUG DELETE]  Attempting to delete physical PDF: ${report.pdfPath}`);
+        await fs.unlink(report.pdfPath);
+        console.log(`[DEBUG DELETE]  Physical PDF deleted successfully.`);
+      }
+      
+      if (report.xlsxPath) {
+        console.log(`[DEBUG DELETE]  Attempting to delete physical XLSX: ${report.xlsxPath}`);
+        await fs.unlink(report.xlsxPath);
+        console.log(`[DEBUG DELETE]  Physical XLSX deleted successfully.`);
+      }
+    } catch (fileErr: any) {
+      console.error(`[DEBUG DELETE]  Failed to delete some physical files (maybe they don't exist?):`, fileErr.message);
+      // ממשיכים בכל זאת כדי לא לתקוע את המחיקה מהדאטאבייס
+    }
+
+    // 3. מחיקת הדוח מה-Database
+    console.log(`[DEBUG DELETE]  Removing report document from MongoDB...`);
+    await ReportModel.findByIdAndDelete(reportId);
+    console.log(`[DEBUG DELETE]  Report ${reportId} completely wiped out!`);
+
+    // 4. החזרת תשובה תקינה לפרונטאנד
+    return res.json({ success: true, message: "Report deleted successfully" });
+
+  } catch (err: any) {
+    console.error(`[DEBUG DELETE]  CRITICAL ERROR during deletion:`, err.message);
+    return res.status(500).json({ error: `Deletion failed: ${err.message}` });
+  }
 });

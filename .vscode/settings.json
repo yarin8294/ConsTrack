@@ -1,0 +1,12 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:system",
+    "python-envs.defaultPackageManager": "ms-python.python:pip",
+    "terminal.integrated.shellArgs.windows": [],
+    "terminal.integrated.profiles.windows": {
+        "PowerShell": {
+            "source": "PowerShell",
+            "args": ["-NoProfile"]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell"
+}
