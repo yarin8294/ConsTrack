@@ -150,6 +150,9 @@ export type RunDoc = {
   degenerateClusterCount?: number;
   /** Populated only when calcTask43Metrics threw — signals bad dates or missing scope. */
   task43Error?: string;
+  /** Target/scope volume (m³) used as the Task 4.3 denominator for this run — copied from
+   *  the request body or ProjectDoc.targetVolumeM3 at run-creation time (see runs.ts). */
+  targetVolumeM3?: number;
 };
 
 const MetricSchema = new Schema<AreaMetric>(
@@ -195,6 +198,7 @@ const RunSchema = new Schema<RunDoc>(
     volumeBasis: { type: String, required: false },
     degenerateClusterCount: { type: Number, required: false },
     task43Error: { type: String, required: false },
+    targetVolumeM3: { type: Number, required: false },
   },
   { versionKey: false }
 );

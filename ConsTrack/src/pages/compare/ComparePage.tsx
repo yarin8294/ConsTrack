@@ -367,4 +367,5 @@ export function ComparePage() {
       </div>
     </div>
   );
+
 }

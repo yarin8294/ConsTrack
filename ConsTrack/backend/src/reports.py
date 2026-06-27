@@ -11,7 +11,7 @@ from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    HRFlowable, Image, KeepTogether
+    HRFlowable, Image, KeepTogether, PageBreak
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -54,6 +54,10 @@ VOL_T1 = 0.0
 VOL_T2 = 0.0
 VOL_DELTA = 0.0
 FORECAST = ""
+TARGET_VOLUME_M3 = 0.0
+HEADLINE_ZONE_NAME = "Unknown Zone"
+PROGRESS_VS_TARGET_PCT = 0.0
+PRIOR_VS_TARGET_PCT = 0.0
 
 def fig_to_image(fig, dpi=150):
     buf = io.BytesIO()
@@ -112,21 +116,31 @@ def chart_zone_progress():
     mpl_style()
     fig, ax = plt.subplots(figsize=(7, 3.2))
     names = [z['name'] for z in ZONES]
-    progress = [z['progress'] for z in ZONES]
-    completion = [z['completion'] for z in ZONES]
+    progress = [z['progress_vs_target'] for z in ZONES]
+    prior = [z['prior_vs_target'] for z in ZONES]
+    has_data = [z.get('has_data', True) for z in ZONES]
     y = np.arange(len(names))
     h = 0.35
-    colors_prog = ['#00C6A7' if p >= c else '#E63946' for p, c in zip(progress, completion)]
-    ax.barh(y + h/2, progress, h, color=colors_prog, alpha=0.85, label='Current Progress', zorder=3)
-    ax.barh(y - h/2, completion, h, color='#1B3A5C', alpha=0.6, label='Historical Target', zorder=3)
-    for i, (p, c) in enumerate(zip(progress, completion)):
-        ax.text(p + 0.5, i + h/2, f'{p:.1f}%', va='center', fontsize=8, color='#0D1B2A')
+    colors_prog = ['#00C6A7' if (p >= c) else '#E63946' for p, c in zip(progress, prior)]
+    colors_prog = [colors_prog[i] if has_data[i] else '#C7CDD6' for i in range(len(names))]
+    ax.barh(y + h/2, progress, h, color=colors_prog, alpha=0.85, zorder=3)
+    ax.barh(y - h/2, prior, h, color='#1B3A5C', alpha=0.6, zorder=3)
+    for i, (p, c, d) in enumerate(zip(progress, prior, has_data)):
+        label = f'{p:.1f}%' if d else 'No scan data yet'
+        ax.text(p + 0.5, i + h/2, label, va='center', fontsize=8, color='#0D1B2A' if d else '#8A9BB0', style=('normal' if d else 'italic'))
     ax.set_yticks(y)
     ax.set_yticklabels(names, fontsize=9)
     ax.set_xlabel('Completion (%)', fontsize=9)
     ax.set_xlim(0, 110)
-    ax.legend(fontsize=9, loc='lower right')
-    ax.set_title('Zone-by-Zone Progress vs. Target', fontsize=11, fontweight='bold', color='#0D1B2A', pad=10)
+    # Explicit solid-color legend patches — a per-bar color LIST (teal/red/gray mixed)
+    # confuses matplotlib's auto-legend into picking a washed-out swatch, so we build
+    # the legend manually with the two canonical colors instead.
+    legend_handles = [
+        mpatches.Patch(facecolor='#00C6A7', edgecolor='none', alpha=0.85, label='Built vs. Target (T2)'),
+        mpatches.Patch(facecolor='#1B3A5C', edgecolor='none', alpha=0.85, label='Prior vs. Target (T1)'),
+    ]
+    ax.legend(handles=legend_handles, fontsize=9, loc='lower right', framealpha=0.95)
+    ax.set_title('Zone-by-Zone Volume vs. Target', fontsize=11, fontweight='bold', color='#0D1B2A', pad=10)
     fig.tight_layout()
     return fig_to_image(fig)
 
@@ -165,6 +179,7 @@ def build_pdf(target_pdf_path):
     
     body = ParagraphStyle('body', fontName='Helvetica', fontSize=9.5, leading=14, textColor=rl_color(NAVY_HEX), spaceAfter=4)
     small = ParagraphStyle('small', fontName='Helvetica', fontSize=8.5, leading=12, textColor=rl_color(MID_GRAY))
+    formula_small = ParagraphStyle('formula_small', fontName='Helvetica-Oblique', fontSize=7, leading=9, textColor=rl_color(MID_GRAY))
     kv_key = ParagraphStyle('kk', fontName='Helvetica-Bold', fontSize=9, textColor=rl_color(STEEL_HEX))
     kv_val = ParagraphStyle('kv', fontName='Helvetica', fontSize=9, textColor=rl_color(NAVY_HEX))
     th_style = ParagraphStyle('th', fontName='Helvetica-Bold', fontSize=9, textColor=rl_color(WHITE))
@@ -197,7 +212,7 @@ def build_pdf(target_pdf_path):
     story.append(CoverBanner())
     story.append(Spacer(1, 10))
 
-    meta_rows = [['Run ID', RUN_ID], ['T1 Scan Date', T1_SCAN], ['T2 Scan Date', T2_SCAN], ['Forecast', FORECAST]]
+    meta_rows = [['Run ID', RUN_ID], ['T1 Scan Date', T1_SCAN], ['T2 Scan Date', T2_SCAN], ['Target Volume', f'{TARGET_VOLUME_M3:.3f} m³'], ['This Run Covers', HEADLINE_ZONE_NAME], ['Forecast', FORECAST]]
     meta_table_data = [[Paragraph(k, kv_key), Paragraph(v, kv_val)] for k, v in meta_rows]
     meta_tbl = Table(meta_table_data, colWidths=[content_width*0.28, content_width*0.72])
     meta_tbl.setStyle(TableStyle([
@@ -214,12 +229,12 @@ def build_pdf(target_pdf_path):
     story.append(meta_tbl)
     story.append(Spacer(1, 14))
 
-    story.append(SectionHeader('1', 'Progress by Area', content_width))
+    story.append(SectionHeader('1', f'Progress by Area — {HEADLINE_ZONE_NAME}', content_width))
     story.append(Spacer(1, 8))
 
     cw = content_width / 3 - 3
     kpi_tbl = Table([[
-        Table([[Paragraph(f'<font color="#00C6A7"><b>{OVERALL_PCT:.1f}%</b></font>', ParagraphStyle('k1', fontName='Helvetica-Bold', fontSize=22, textColor=rl_color(ACCENT_HEX), leading=26))], [Paragraph('Overall Progress', small)]], colWidths=[cw]),
+        Table([[Paragraph(f'<font color="#00C6A7"><b>{OVERALL_PCT:.1f}%</b></font>', ParagraphStyle('k1', fontName='Helvetica-Bold', fontSize=22, textColor=rl_color(ACCENT_HEX), leading=26))], [Paragraph('Overall Progress', small)], [Paragraph('DeltaVol / Initial Volume', formula_small)]], colWidths=[cw]),
         Table([[Paragraph(f'<font color="#F4A261"><b>{FORECAST}</b></font>', ParagraphStyle('k2', fontName='Helvetica-Bold', fontSize=16, textColor=rl_color(ACCENT2), leading=20))], [Paragraph('Forecast Completion', small)]], colWidths=[cw]),
         Table([[Paragraph(f'<font color="#06D6A0"><b>{VOL_DELTA:+.3f} m³</b></font>', ParagraphStyle('k3', fontName='Helvetica-Bold', fontSize=18, textColor=rl_color(GREEN_OK), leading=22))], [Paragraph('Net Volume Change', small)]], colWidths=[cw]),
     ]], colWidths=[cw+3]*3)
@@ -240,14 +255,21 @@ def build_pdf(target_pdf_path):
         story.append(Image(buf_zone, width=content_width, height=content_width * 0.46))
         story.append(Spacer(1, 8))
 
-        zone_header = [Paragraph('<b>Zone</b>', th_style), Paragraph('<b>Type</b>', th_style), Paragraph('<b>Target %</b>', th_style), Paragraph('<b>Progress %</b>', th_style), Paragraph('<b>DeltaVol (m3)</b>', th_style)]
+        zone_header = [Paragraph('<b>Zone</b>', th_style), Paragraph('<b>Type</b>', th_style), Paragraph('<b>Prior vs. Target %</b>', th_style), Paragraph('<b>Built vs. Target %</b>', th_style), Paragraph('<b>DeltaVol (m3)</b>', th_style)]
         zone_rows = [zone_header]
         for z in ZONES:
-            zone_rows.append([
-                Paragraph(z['name'], body), Paragraph(z['type'], body),
-                Paragraph(f"{z['completion']:.1f}%", body), Paragraph(f"<b>{z['progress']:.1f}%</b>", body),
-                Paragraph(f"{z['vol']:.3f}", body),
-            ])
+            if z.get('has_data', True):
+                zone_rows.append([
+                    Paragraph(z['name'], body), Paragraph(z['type'], body),
+                    Paragraph(f"{z['prior_vs_target']:.1f}%", body), Paragraph(f"<b>{z['progress_vs_target']:.1f}%</b>", body),
+                    Paragraph(f"{z['vol']:.3f}", body),
+                ])
+            else:
+                zone_rows.append([
+                    Paragraph(z['name'], body), Paragraph(z['type'], body),
+                    Paragraph("<i>No scan data yet</i>", small), Paragraph("<i>No scan data yet</i>", small),
+                    Paragraph("—", body),
+                ])
         zone_tbl = Table(zone_rows, colWidths=[content_width*w for w in [0.25, 0.16, 0.14, 0.17, 0.16]])
         zone_tbl.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), rl_color(NAVY_HEX)),
@@ -261,6 +283,7 @@ def build_pdf(target_pdf_path):
         story.append(zone_tbl)
         story.append(Spacer(1, 14))
 
+    story.append(PageBreak())
     story.append(SectionHeader('2', 'Volume & Area Material Changes', content_width))
     story.append(Spacer(1, 8))
 
@@ -356,7 +379,7 @@ def build_excel(target_xlsx_path):
     ws1['A1'].fill = PatternFill('solid', fgColor=NAVY_HEX)
 
     ws1.merge_cells('A3:F3')
-    ws1['A3'].value = f'  Generated: {GENERATED}   |   Run ID: {RUN_ID}   |   Forecast: {FORECAST}'
+    ws1['A3'].value = f'  Generated: {GENERATED}   |   Run ID: {RUN_ID}   |   Zone: {HEADLINE_ZONE_NAME}   |   Forecast: {FORECAST}'
     ws1['A3'].font = Font(name='Arial', color=MID_GRAY, size=9)
     ws1['A3'].fill = PatternFill('solid', fgColor="E8EEF4")
 
@@ -372,7 +395,7 @@ def build_excel(target_xlsx_path):
         ws1.cell(row=6, column=col).border = Border(bottom=Side(style='medium', color=color))
 
     merge_title(ws1, 10, 1, 6, '  Run Metadata', bg=STEEL_HEX)
-    meta = [('Run ID', RUN_ID), ('T1 Scan Date', T1_SCAN), ('T2 Scan Date', T2_SCAN), ('Forecast', FORECAST), ('Generated', GENERATED)]
+    meta = [('Run ID', RUN_ID), ('T1 Scan Date', T1_SCAN), ('T2 Scan Date', T2_SCAN), ('Target Volume', f'{TARGET_VOLUME_M3:.3f} m³'), ('This Run Covers', HEADLINE_ZONE_NAME), ('Forecast', FORECAST), ('Generated', GENERATED)]
     for i, (k, v) in enumerate(meta, start=11):
         style_cell(ws1, i, 1, value=k, bold=True, font_color=STEEL_HEX, bg=LIGHT_BG if i%2==0 else WHITE, size=9)
         style_cell(ws1, i, 2, value=v, bold=False, font_color=NAVY_HEX, bg=LIGHT_BG if i%2==0 else WHITE, size=9)
@@ -394,16 +417,21 @@ def build_excel(target_xlsx_path):
         ws2['A1'].font = Font(name='Arial', bold=True, color=ACCENT_HEX, size=16)
         ws2['A1'].fill = PatternFill('solid', fgColor=NAVY_HEX)
         
-        headers = ['Zone', 'Type', 'Target %', 'Progress %', 'ΔVol (m³)']
+        headers = ['Zone', 'Type', 'Prior vs. Target %', 'Built vs. Target %', 'ΔVol (m³)']
         for col, h in enumerate(headers, 1): style_cell(ws2, 3, col, value=h, bold=True, font_color=WHITE, bg=NAVY_HEX, align='center')
         
         for i, z in enumerate(ZONES, start=4):
             bg = LIGHT_BG if i%2==0 else WHITE
             style_cell(ws2, i, 1, value=z['name'], bold=True, font_color=NAVY_HEX, bg=bg)
             style_cell(ws2, i, 2, value=z['type'], font_color=MID_GRAY, bg=bg, align='center')
-            style_cell(ws2, i, 3, value=z['completion']/100, font_color=STEEL_HEX, bg=bg, align='center', number_format='0.0%')
-            style_cell(ws2, i, 4, value=z['progress']/100, bold=True, font_color=ACCENT_HEX, bg=bg, align='center', number_format='0.0%')
-            style_cell(ws2, i, 5, value=z['vol'], font_color=RED_ZONE, bg=bg, align='center', number_format='#,##0.000')
+            if z.get('has_data', True):
+                style_cell(ws2, i, 3, value=z['prior_vs_target']/100, font_color=STEEL_HEX, bg=bg, align='center', number_format='0.0%')
+                style_cell(ws2, i, 4, value=z['progress_vs_target']/100, bold=True, font_color=ACCENT_HEX, bg=bg, align='center', number_format='0.0%')
+                style_cell(ws2, i, 5, value=z['vol'], font_color=RED_ZONE, bg=bg, align='center', number_format='#,##0.000')
+            else:
+                style_cell(ws2, i, 3, value='No scan data yet', font_color=MID_GRAY, bg=bg, align='center')
+                style_cell(ws2, i, 4, value='No scan data yet', font_color=MID_GRAY, bg=bg, align='center')
+                style_cell(ws2, i, 5, value='—', font_color=MID_GRAY, bg=bg, align='center')
 
     ws1.freeze_panes = 'A4'
     ws1.sheet_properties.tabColor = ACCENT_HEX
@@ -411,6 +439,7 @@ def build_excel(target_xlsx_path):
 
 def main():
     global RUN_ID, GENERATED, T1_SCAN, T2_SCAN, OVERALL_PCT, VOL_T1, VOL_T2, VOL_DELTA, FORECAST, ZONES
+    global TARGET_VOLUME_M3, PROGRESS_VS_TARGET_PCT, PRIOR_VS_TARGET_PCT, HEADLINE_ZONE_NAME
 
     if len(sys.argv) < 2:
         print("[DEBUG Python ERROR] No arguments passed to script!", flush=True)
@@ -431,7 +460,6 @@ def main():
         RUN_ID = str(run_obj.get("_id", "Unknown_Run"))
         GENERATED = str(run_obj.get("createdAtISO", ""))
         
-        # שמירת תאריך נקי (10 תווים ראשונים של ה-ISO String)
         T1_SCAN = str(input_data.get("t1ScanDate", "Unknown_T1"))[:10] 
         T2_SCAN = str(input_data.get("t2ScanDate", "Unknown_T2"))[:10] 
         
@@ -441,7 +469,15 @@ def main():
         VOL_T1 = float(run_obj.get("volumeT1M3", 0.0))
         VOL_T2 = float(run_obj.get("volumeT2M3", 0.0))
         VOL_DELTA = float(run_obj.get("volumeChangeM3", 0.0))
-        FORECAST = str(run_obj.get("etaISO", ""))[:10]  
+        FORECAST = str(run_obj.get("etaISO", ""))[:10]
+
+        TARGET_VOLUME_M3 = float(input_data.get("targetVolumeM3", run_obj.get("targetVolumeM3", 0.0)) or 0.0)
+        HEADLINE_ZONE_NAME = str(input_data.get("headlineZoneName", "Unknown Zone")) or "Unknown Zone"
+
+        # New construction (T2) relative to the planned/target scope volume.
+        PROGRESS_VS_TARGET_PCT = (VOL_T2 / TARGET_VOLUME_M3 * 100.0) if TARGET_VOLUME_M3 > 0 else 0.0
+        # Pre-existing construction (T1) relative to the planned/target scope volume.
+        PRIOR_VS_TARGET_PCT = (VOL_T1 / TARGET_VOLUME_M3 * 100.0) if TARGET_VOLUME_M3 > 0 else 0.0
 
         raw_forecast = run_obj.get("etaISO")
         print(f"[DEBUG Forecast] Raw value from Node: '{raw_forecast}'", flush=True)
@@ -450,19 +486,43 @@ def main():
         if not FORECAST:
             print("[DEBUG Forecast WARNING] FORECAST parsed as empty string!", flush=True)
 
+        # zoneRuns: each entry is resolved server-side (reports.ts) by matching a zone's
+        # linkedScanIds against Run.t1ScanId/t2ScanId — i.e. the most recent Run whose scan
+        # pair actually belongs to that specific zone. This gives a REAL per-zone volume
+        # change, unlike metricsByZone (which currently just divides the site-wide total
+        # evenly across zones upstream in runs.ts).
+        zone_runs_list = input_data.get("zoneRuns", [])
+
         ZONES = []
-        metrics_by_zone = {m["zoneId"]: m for m in run_obj.get("metricsByZone", [])}
-        
-        for z in zones_list:
-            z_id = z.get("_id")
-            metric = metrics_by_zone.get(z_id, {})
+        for zr in zone_runs_list:
+            has_data = bool(zr.get("hasData"))
+            z_vol_t1 = float(zr.get("volumeT1M3") or 0.0)
+            z_vol_t2 = float(zr.get("volumeT2M3") or 0.0)
+            z_vol_delta = float(zr.get("volumeChangeM3") or 0.0)
+
+            z_progress_vs_target = (z_vol_t2 / TARGET_VOLUME_M3 * 100.0) if (has_data and TARGET_VOLUME_M3 > 0) else 0.0
+            z_prior_vs_target = (z_vol_t1 / TARGET_VOLUME_M3 * 100.0) if (has_data and TARGET_VOLUME_M3 > 0) else 0.0
+
             ZONES.append({
-                'name': z.get("name", "Unknown Zone"),
-                'type': z.get("type", "site").capitalize(),
-                'completion': float(z.get("completionPct", 0.0)),
-                'progress': float(metric.get("progressPct", 0.0)),
-                'vol': float(metric.get("volumeChangeM3", 0.0))
+                'name': zr.get("name", "Unknown Zone"),
+                'type': str(zr.get("type", "site")).capitalize(),
+                'has_data': has_data,
+                'vol': z_vol_delta,
+                'progress_vs_target': z_progress_vs_target,
+                'prior_vs_target': z_prior_vs_target,
             })
+
+        # Fallback: if reports.ts didn't send zoneRuns (e.g. older caller), show a single
+        # site-wide row rather than the misleading flat-divided metricsByZone breakdown.
+        if not ZONES:
+            ZONES = [{
+                'name': 'Block',
+                'type': 'Site',
+                'has_data': True,
+                'vol': VOL_DELTA,
+                'progress_vs_target': PROGRESS_VS_TARGET_PCT,
+                'prior_vs_target': PRIOR_VS_TARGET_PCT,
+            }]
 
         print(f"[DEBUG Python] Target PDF path: {pdf_path}", flush=True)
         print(f"[DEBUG Python] Target XLSX path: {xlsx_path}", flush=True)

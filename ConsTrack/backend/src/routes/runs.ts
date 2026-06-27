@@ -56,6 +56,8 @@ router.get("/", authenticateToken, async (req, res) => {
       volumeBasis: r.volumeBasis,
       degenerateClusterCount: r.degenerateClusterCount,
       task43Error: r.task43Error,
+      // @ts-ignore
+      targetVolumeM3: r.targetVolumeM3,
     }))
   );
 });
@@ -83,6 +85,10 @@ router.post("/", authenticateToken, async (req, res) => {
     return res.status(409).json({ error: "A comparison is already running for this project" });
   }
 
+  //שליפת הפרויקט מראש ומניעת ה-ReferenceError על ידי הגדרת המשתנה לפני השימוש ב-create
+  const project = await ProjectModel.findById(projectId).lean();
+  const resolvedTargetVolumeM3 = reqTargetVolumeM3 ?? project?.targetVolumeM3 ?? DEFAULT_TARGET_M3;
+
   const created = await RunModel.create({
     projectId,
     createdAtISO: new Date().toISOString(),
@@ -96,6 +102,7 @@ router.post("/", authenticateToken, async (req, res) => {
     overallProgressPct: 0,
     metricsByZone: [],
     forecastCompletionISO: undefined,
+    targetVolumeM3: resolvedTargetVolumeM3,
   });
 
   const runId = String(created._id);
@@ -227,17 +234,16 @@ router.post("/", authenticateToken, async (req, res) => {
       };
 
       try {
-        const project = await ProjectModel.findById(projectId).lean();
         const task43 = calcTask43Metrics({
           addedM3:        addedVolumeM3,
           removedM3:      removedVolumeM3,
           displacementM3: disp?.displacementM3 ?? 0,
           t1ISO:          t1.capturedAtISO,
           t2ISO:          t2.capturedAtISO,
-          targetVolumeM3: reqTargetVolumeM3 ?? project?.targetVolumeM3 ?? DEFAULT_TARGET_M3,
+          targetVolumeM3: resolvedTargetVolumeM3,
           plannedRateM3PerDay: undefined,
         });
-        Object.assign(updateDoc, task43, { volumeBasis, degenerateClusterCount });
+        Object.assign(updateDoc, task43, { volumeBasis, degenerateClusterCount, targetVolumeM3: resolvedTargetVolumeM3 });
       } catch (err) {
         console.error({ runId, err }, "calcTask43Metrics failed");
         updateDoc.task43Error = err instanceof Error ? err.message : String(err);
