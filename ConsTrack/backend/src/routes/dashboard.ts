@@ -7,7 +7,7 @@ export const router = Router();
 router.get("/", authenticateToken, async (req, res) => {
   const projectId = String(req.query.projectId || "");
   const latest = await RunModel.findOne({ projectId, status: "done" }).sort({ createdAtISO: -1 }).lean();
-  const overallProgressPct = latest?.overallProgressPct ?? 0;
+  const overallProgressPct = latest?.completionPctDelta ?? latest?.overallProgressPct ?? 0;
   const volumeChangeM3 = latest?.volumeChangeM3 ?? 0;
   const forecastCompletionISO = latest?.forecastCompletionISO || "";
 
@@ -24,7 +24,7 @@ router.get("/", authenticateToken, async (req, res) => {
   }
 
   const runs = await RunModel.find({ projectId, status: "done" }).sort({ createdAtISO: 1 }).lean();
-  const series = runs.map((r) => ({ t: r.createdAtISO, progressPct: r.overallProgressPct }));
+  const series = runs.map((r) => ({ t: r.createdAtISO, progressPct: r.completionPctDelta ?? r.overallProgressPct ?? 0 }));
 
   res.json({ overallProgressPct, volumeChangeM3, forecastCompletionISO, productivityIndex, series });
 });

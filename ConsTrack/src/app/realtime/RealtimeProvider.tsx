@@ -16,12 +16,19 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
   const listenersRef = useRef<Map<string, Set<Callback>>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
 
-  useEffect(() => {
+useEffect(() => {
     if (!activeProjectId) return;
 
     try { wsRef.current?.close(); } catch { /* ignore */ }
 
-    const ws = new WebSocket(`ws://localhost:4000/ws?projectId=${encodeURIComponent(activeProjectId)}`);
+    //Read from Vite env, fallback to localhost
+    const baseUrl = import.meta.env.VITE_API_BASE || "http://localhost:4000";
+    
+    //Safely swap http -> ws and https -> wss
+    const wsBase = baseUrl.replace(/^http/, "ws");
+    const wsUrl = `${wsBase}/ws?projectId=${encodeURIComponent(activeProjectId)}`;
+
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onmessage = (ev) => {

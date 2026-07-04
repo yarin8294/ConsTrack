@@ -192,27 +192,44 @@ router.post("/", authenticateToken, async (req, res) => {
       // what existed at T1.  E.g. if T1 is 100 m³ and 20 m³ was added → 20%.
       const overallProgressPct = calcProgressFromDelta(addedVolumeM3, volumeT1M3);
 
-      const leafZones = await getLeafZones(projectId);
-      const perZoneProgress = leafZones.map((z, i) => {
-        const w = leafZones.length <= 1 ? 1 : (i + 1) / leafZones.length;
-        const p = Math.max(0, Math.min(100, overallProgressPct * (0.7 + 0.6 * w)));
-        return {
-          zoneId: String(z._id),
-          progressPct: Math.round(p * 10) / 10,
-          volumeChangeM3: volumeChangeM3 / Math.max(1, leafZones.length),
-        };
-      });
-
-      const root = await ZoneModel.findOne({ projectId, type: "site" }).lean();
-      if (root) await ZoneModel.findByIdAndUpdate(String(root._id), { completionPct: overallProgressPct });
-
-      // alignmentConfidence comes directly from ICP fitness/RMSE — no guessing.
-      const conf = preprocessResult.alignmentConfidence.toLowerCase() as "high" | "medium" | "low";
-
-      // ── Task 4.3 metrics ────────────────────────────────────────────────────
+      // ── Task 4.3 metrics (computed first so completionPctDelta drives zone progress) ──
       const disp = changes.displacement;
       const volumeBasis = disp?.stats.volumeBasis;
       const degenerateClusterCount = disp?.stats.degenerateClusterCount;
+
+      let task43: ReturnType<typeof calcTask43Metrics> | null = null;
+      let task43Error: string | undefined;
+      try {
+        task43 = calcTask43Metrics({
+          addedM3:        addedVolumeM3,
+          removedM3:      removedVolumeM3,
+          displacementM3: disp?.displacementM3 ?? 0,
+          t1ISO:          t1.capturedAtISO,
+          t2ISO:          t2.capturedAtISO,
+          targetVolumeM3: resolvedTargetVolumeM3,
+          plannedRateM3PerDay: undefined,
+        });
+      } catch (err) {
+        console.error({ runId, err }, "calcTask43Metrics failed");
+        task43Error = err instanceof Error ? err.message : String(err);
+      }
+
+      // Use completionPctDelta (vs target volume) for zone progress; fall back to
+      // overallProgressPct only when task43 failed (e.g. t2 not later than t1).
+      const completionPct = task43?.completionPctDelta ?? overallProgressPct;
+
+      const leafZones = await getLeafZones(projectId);
+      const perZoneProgress = leafZones.map((z) => ({
+        zoneId: String(z._id),
+        progressPct: Math.round(completionPct * 10) / 10,
+        volumeChangeM3: volumeChangeM3 / Math.max(1, leafZones.length),
+      }));
+
+      const root = await ZoneModel.findOne({ projectId, type: "site" }).lean();
+      if (root) await ZoneModel.findByIdAndUpdate(String(root._id), { completionPct });
+
+      // alignmentConfidence comes directly from ICP fitness/RMSE — no guessing.
+      const conf = preprocessResult.alignmentConfidence.toLowerCase() as "high" | "medium" | "low";
 
       const updateDoc: Record<string, unknown> = {
         status: "done",
@@ -233,20 +250,10 @@ router.post("/", authenticateToken, async (req, res) => {
         removedElementCount: changes.removed.elementCount,
       };
 
-      try {
-        const task43 = calcTask43Metrics({
-          addedM3:        addedVolumeM3,
-          removedM3:      removedVolumeM3,
-          displacementM3: disp?.displacementM3 ?? 0,
-          t1ISO:          t1.capturedAtISO,
-          t2ISO:          t2.capturedAtISO,
-          targetVolumeM3: resolvedTargetVolumeM3,
-          plannedRateM3PerDay: undefined,
-        });
+      if (task43) {
         Object.assign(updateDoc, task43, { volumeBasis, degenerateClusterCount, targetVolumeM3: resolvedTargetVolumeM3 });
-      } catch (err) {
-        console.error({ runId, err }, "calcTask43Metrics failed");
-        updateDoc.task43Error = err instanceof Error ? err.message : String(err);
+      } else if (task43Error) {
+        updateDoc.task43Error = task43Error;
       }
 
       await RunModel.findByIdAndUpdate(runId, updateDoc);

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAppData } from "../../app/data/useAppData";
 import * as THREE from "three";
 // @ts-ignore
@@ -8,6 +9,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 export function ModelPage() {
   const { data } = useAppData();
+  const [searchParams] = useSearchParams();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -17,7 +19,8 @@ export function ModelPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedScan = data.scans.find(s => s.id === data.selectedT2);
+  const scanId = searchParams.get("scanId") ?? data.selectedT2;
+  const selectedScan = data.scans.find(s => s.id === scanId);
 
   useEffect(() => {
     if (!canvasRef.current || !selectedScan) return;

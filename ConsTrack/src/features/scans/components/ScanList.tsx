@@ -26,7 +26,7 @@ export function ScanList() {
           <div className="flex gap-2 shrink-0">
             <button
               className="rounded-lg border border-app px-3 py-1.5 text-xs bg-app hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              onClick={() => navigate("/model")}
+              onClick={() => navigate(`/model?scanId=${scan.id}`)}
             >
               View 3D
             </button>

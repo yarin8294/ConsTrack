@@ -27,13 +27,13 @@ router.get("/", authenticateToken, async (req, res) => {
       RunModel.aggregate([
         { $match: { projectId: { $in: projectIds }, status: "done" } },
         { $sort: { createdAtISO: -1 } },
-        { $group: { _id: "$projectId", overallProgressPct: { $first: "$overallProgressPct" }, lastRunISO: { $first: "$createdAtISO" } } },
+        { $group: { _id: "$projectId", completionPctDelta: { $first: "$completionPctDelta" }, overallProgressPct: { $first: "$overallProgressPct" }, lastRunISO: { $first: "$createdAtISO" } } },
       ]),
     ]);
 
     const scanMap = Object.fromEntries(scanCounts.map((x: any) => [x._id, x.count]));
     const zoneMap = Object.fromEntries(zoneCounts.map((x: any) => [x._id, x.count]));
-    const runMap = Object.fromEntries(latestRuns.map((x: any) => [x._id, { pct: x.overallProgressPct, lastISO: x.lastRunISO }]));
+    const runMap = Object.fromEntries(latestRuns.map((x: any) => [x._id, { pct: x.completionPctDelta ?? x.overallProgressPct, lastISO: x.lastRunISO }]));
 
     res.json(
       projects.map((p) => {

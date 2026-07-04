@@ -72,7 +72,10 @@ export async function generateReportFiles(opts: {
     console.log("[DEBUG 4] Executing Python process...");
     
 
-    const pyBin = process.env.PYTHON_BIN || "python";
+    const pyBinRaw = process.env.PYTHON_BIN || "python";
+    // Resolve relative paths from the backend root (process.cwd()) so execFile finds the
+    // binary even when cwd is changed to scriptDirectory below.
+    const pyBin = path.isAbsolute(pyBinRaw) ? pyBinRaw : path.resolve(process.cwd(), pyBinRaw);
     const { stdout, stderr } = await execFileAsync(pyBin, [scriptName, JSON.stringify(payload)], {
       cwd: scriptDirectory
     });

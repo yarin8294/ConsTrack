@@ -63,14 +63,14 @@ router.get("/recommendations", authenticateToken, async (req, res) => {
     return res.json({
       recommendations: [
         "Enable Gemini by setting GEMINI_API_KEY to get AI recommendations.",
-        `Latest progress is ${latest.overallProgressPct.toFixed(1)}% with volume delta ${latest.volumeChangeM3?.toFixed(2) ?? 0} m³.`,
+        `Latest progress is ${(latest.completionPctDelta ?? latest.overallProgressPct ?? 0).toFixed(1)}% with volume delta ${latest.volumeChangeM3?.toFixed(2) ?? 0} m³.`,
       ],
     });
   }
 
   const prompt = [
     "You are a construction scheduler and progress analyst. Provide concise recommendations (max 3 bullets) for the project team.",
-    `Latest run overall progress: ${latest.overallProgressPct.toFixed(1)}%.`,
+    `Latest run overall progress: ${(latest.completionPctDelta ?? latest.overallProgressPct ?? 0).toFixed(1)}%.`,
     `Volume change: ${latest.volumeChangeM3?.toFixed(2) ?? 0} m3.`,
     `Forecast completion: ${latest.forecastCompletionISO || "n/a"}.`,
     `Alignment confidence: ${latest.alignmentConfidence}.`,

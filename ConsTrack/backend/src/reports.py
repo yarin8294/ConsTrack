@@ -465,7 +465,7 @@ def main():
         
         print(f"[DEBUG Python Scans Match] Parsed values -> T1 Scan Date: '{T1_SCAN}' | T2 Scan Date: '{T2_SCAN}'", flush=True)
 
-        OVERALL_PCT = float(run_obj.get("overallProgressPct", 0.0))
+        OVERALL_PCT = float(run_obj.get("completionPctDelta") or run_obj.get("overallProgressPct") or 0.0)
         VOL_T1 = float(run_obj.get("volumeT1M3", 0.0))
         VOL_T2 = float(run_obj.get("volumeT2M3", 0.0))
         VOL_DELTA = float(run_obj.get("volumeChangeM3", 0.0))
