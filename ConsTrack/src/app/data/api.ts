@@ -17,6 +17,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || '';
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem("constrack_token");
   const headers: Record<string, string> = {
+    'ngrok-skip-browser-warning': 'true',
     ...(init?.headers as Record<string, string> || {}),
   };
 
@@ -175,7 +176,9 @@ export async function uploadScan(projectId: string, file: File, capturedAtISO: s
   fd.append("file", file);
 
   const token = localStorage.getItem("constrack_token");
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'ngrok-skip-browser-warning': 'true',
+  };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
