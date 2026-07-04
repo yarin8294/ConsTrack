@@ -56,7 +56,9 @@ export function ModelPage() {
 
       try {
         const token = localStorage.getItem("constrack_token");
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+          'ngrok-skip-browser-warning': 'true'
+        };
         if (token) headers['Authorization'] = `Bearer ${token}`;
 
         // Request binary format for faster transfer
